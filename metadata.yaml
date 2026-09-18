@@ -1,0 +1,26 @@
+name: astrbot_plugin_multimodal_enhance
+display_name: 多模态理解增强
+short_desc: 让 Bot 真正「看懂」图片、音频与视频（图片转述增强 / 音频解析 / 视频抽帧理解）
+desc: >
+  为 Bot 补齐「感官」能力：图片理解增强（向图转文模型转述时注入用户当前消息）；
+  音频理解（语音/音频转文本、音乐链接元数据+歌词+频谱）；视频理解（视频/B站链接抽帧理解+音轨解析）。
+  支持多 bot 独立配置与插件页面（配置/日志/总览）可视化管理。
+help: >
+  在插件页面或插件配置中按需开启：图片增强、音频理解、视频理解（均可按 bot 单独覆写）。
+  模型跟随 AstrBot 现有配置：图转文使用「图片描述」设置、语音转文本使用「STT」设置；未配置时对应功能自动跳过。
+version: v0.1.0
+author: baizi51676-source
+repo: https://github.com/baizi51676-source/astrbot_plugin_multimodal_enhance
+astrbot_version: ">=4.27.0,<5"
+support_platforms:
+  - aiocqhttp
+category: 工具
+tags:
+  - 多模态
+  - 图片增强
+  - 音频解析
+  - 视频抽帧
+  - 多bot
+pages:
+  - name: console
+    title: 多模态理解增强控制台

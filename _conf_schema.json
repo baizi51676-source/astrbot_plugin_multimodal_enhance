@@ -1,0 +1,209 @@
+{
+  "enabled": {
+    "description": "总开关",
+    "hint": "关闭后本插件不做任何解析与注入。",
+    "type": "bool",
+    "default": true
+  },
+  "notice_enabled": {
+    "description": "分析中提示",
+    "hint": "音频/视频解析耗时较长时，先向用户发送「正在分析中」提示（由模型生成，失败自动回退固定文案）。",
+    "type": "bool",
+    "default": true
+  },
+  "notice_provider": {
+    "description": "分析中提示的生成模型",
+    "hint": "留空 = 使用当前会话主模型生成提示语。",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider"
+  },
+  "image_enabled": {
+    "description": "图片理解增强",
+    "hint": "向图转文模型转述图片时，注入用户当前消息，使转述更贴合用户需求。",
+    "type": "bool",
+    "default": true
+  },
+  "image_prompt": {
+    "description": "图片转述注入模板",
+    "hint": "占位符 {user_message} 将被替换为用户当前消息原文。可自由修改（如调整语气/侧重点）。",
+    "type": "string",
+    "default": "现在需要你作为图片转述模型给另一个非多模态模型描述这个图片，该模型现在需要回复QQ群里的人的消息“{user_message}”，请你结合这个消息，分析用户需求。先整体描述，再结合用户需求重点描述所需细节。",
+    "obvious_hint": true
+  },
+  "audio_enabled": {
+    "description": "音频理解",
+    "hint": "语音/音频文件转文本、音乐链接解析（元数据+歌词+频谱）。",
+    "type": "bool",
+    "default": true
+  },
+  "audio_file_enabled": {
+    "description": "语音/音频文件转文本",
+    "hint": "语音与音频文件将转文本后与用户消息一起交给模型；未配置「语音转文本」模型时自动跳过。",
+    "type": "bool",
+    "default": true
+  },
+  "audio_links_enabled": {
+    "description": "音乐链接解析",
+    "hint": "消息中的音乐链接（目前支持网易云）将解析为元数据+歌词+频谱数据，无需转文本。",
+    "type": "bool",
+    "default": true
+  },
+  "audio_ncm_cookie": {
+    "description": "网易云 Cookie（可选）",
+    "hint": "格式如 MUSIC_U=...；留空则匿名访问可用资源。",
+    "type": "string",
+    "default": ""
+  },
+  "audio_deep_mode": {
+    "description": "声纹包式深度分析",
+    "hint": "auto=环境存在 librosa 时自动启用；on=强制启用（缺失则提示到页面安装）；off=关闭，仅输出轻量频谱数据。",
+    "type": "string",
+    "default": "auto"
+  },
+  "audio_spectrum_enabled": {
+    "description": "频谱数据（文本）",
+    "hint": "按分段输出各频段能量与谱质心的文本化频谱数据，供模型阅读。",
+    "type": "bool",
+    "default": true
+  },
+  "audio_spectrum_seg": {
+    "description": "频谱分段秒数",
+    "hint": "每隔多少秒输出一段频谱摘要。默认 5 秒。",
+    "type": "int",
+    "default": 5
+  },
+  "video_enabled": {
+    "description": "视频理解",
+    "hint": "视频抽帧理解+音轨解析。聊天主模型本身支持视频输入时建议保持关闭；未配置所需模型时自动跳过。",
+    "type": "bool",
+    "default": false
+  },
+  "video_frames": {
+    "description": "抽帧数量",
+    "hint": "均匀抽取的帧数。默认 6 帧。",
+    "type": "int",
+    "default": 6
+  },
+  "video_frame_width": {
+    "description": "抽帧宽度上限（像素）",
+    "hint": "帧图将等比缩放到不超过该宽度。默认 640。",
+    "type": "int",
+    "default": 640
+  },
+  "video_max_minutes": {
+    "description": "视频最大时长（分钟）",
+    "hint": "超过该时长的视频/链接不下载、只提供可得信息。默认 10 分钟。",
+    "type": "int",
+    "default": 10
+  },
+  "video_max_size_mb": {
+    "description": "视频最大体积（MB）",
+    "hint": "下载体积上限，超出即停止。默认 100MB。",
+    "type": "int",
+    "default": 100
+  },
+  "video_bili_enabled": {
+    "description": "B站链接解析",
+    "hint": "识别消息中的 B 站视频链接，自动下载并获取标题/简介/发布时间后解析。",
+    "type": "bool",
+    "default": true
+  },
+  "video_caption_provider": {
+    "description": "帧描述（图转文）模型",
+    "hint": "用于描述抽帧画面的模型；留空 = 跟随 AstrBot 的「图片描述」设置。",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider"
+  },
+  "env_ffmpeg_path": {
+    "description": "FFmpeg 路径（环境配置）",
+    "hint": "留空 = 自动查找 PATH 中的 ffmpeg。",
+    "type": "string",
+    "default": ""
+  },
+  "env_ytdlp_path": {
+    "description": "yt-dlp 路径（环境配置）",
+    "hint": "留空 = 自动查找 PATH 中的 yt-dlp。",
+    "type": "string",
+    "default": ""
+  },
+  "env_pip_index": {
+    "description": "pip 镜像源（环境配置）",
+    "hint": "页面中安装可选依赖时使用的镜像源。",
+    "type": "string",
+    "default": "https://pypi.tuna.tsinghua.edu.cn/simple"
+  },
+  "env_work_dir": {
+    "description": "工作目录（环境配置）",
+    "hint": "下载与解析产物目录；留空 = 插件数据目录下 tmp。",
+    "type": "string",
+    "default": ""
+  },
+  "env_keep_temp": {
+    "description": "保留临时文件",
+    "hint": "默认关闭：任务结束后自动清理下载与中间产物。",
+    "type": "bool",
+    "default": false
+  },
+  "log_enabled": {
+    "description": "记录插件日志",
+    "hint": "日志同时可在插件页面「插件日志」查看与导出。",
+    "type": "bool",
+    "default": true
+  },
+  "log_max_lines": {
+    "description": "日志缓冲行数",
+    "hint": "内存中保留的最近日志条数。默认 2000。",
+    "type": "int",
+    "default": 2000
+  },
+  "bots": {
+    "description": "多 bot 覆写",
+    "hint": "为单个/部分 bot 单独覆写功能开关（未匹配任何规则的 bot 使用上方全局配置）。bot 填「平台实例 ID」或「QQ号」。",
+    "type": "template_list",
+    "default": [],
+    "templates": {
+      "rule": {
+        "name": "Bot 覆写",
+        "display_item": "name",
+        "items": {
+          "name": {
+            "description": "备注名",
+            "type": "string",
+            "default": ""
+          },
+          "bots": {
+            "description": "bot 列表（平台实例 ID 或 QQ号）",
+            "hint": "可填多个。",
+            "type": "list",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "enable_image": {
+            "description": "图片理解增强",
+            "type": "bool",
+            "default": true
+          },
+          "enable_audio": {
+            "description": "音频理解",
+            "type": "bool",
+            "default": true
+          },
+          "enable_video": {
+            "description": "视频理解",
+            "type": "bool",
+            "default": false
+          },
+          "enable_notice": {
+            "description": "分析中提示",
+            "type": "bool",
+            "default": true
+          }
+        }
+      }
+    }
+  }
+}
