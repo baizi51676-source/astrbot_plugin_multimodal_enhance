@@ -18,6 +18,13 @@
     "default": "",
     "_special": "select_provider"
   },
+  "notice_prompt": {
+    "description": "分析中提示词",
+    "hint": "发送给 LLM 的指令；模型会以当前会话人格生成一条提示消息。可自由修改。",
+    "type": "string",
+    "default": "视频/音频（视具体情况而定）正在解析中，需耗费时间较多，请你发一条消息表示你正在理解其内容",
+    "obvious_hint": true
+  },
   "image_enabled": {
     "description": "图片理解增强",
     "hint": "向图转文模型转述图片时，注入用户当前消息，使转述更贴合用户需求。",

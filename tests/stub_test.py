@@ -152,6 +152,19 @@ def test_wake_gate() -> None:
           not any("检测到媒体" in e["msg"] for e in plugin.log.tail(30)))
 
 
+def test_bilibili_parse() -> None:
+    print("- B站链接解析")
+    from core.media.bilibili import parse_bili_id
+    check("BV 号提取",
+          parse_bili_id("https://www.bilibili.com/video/BV1xx411c7mD?p=1") == ("bvid", "BV1xx411c7mD"))
+    check("av 号提取",
+          parse_bili_id("https://www.bilibili.com/video/av12345") == ("aid", "12345"))
+    check("纯 BV 串提取", parse_bili_id("看看 BV1GJ411x7h7 这个") == ("bvid", "BV1GJ411x7h7"))
+    check("短链本地不解（返回 None）", parse_bili_id("https://b23.tv/abc123") is None)
+    from core.config import DEFAULTS
+    check("分析中提示词默认值", "正在理解" in str(DEFAULTS.get("notice_prompt", "")))
+
+
 # ---------------- 环境管理 ----------------
 
 def test_env_manager() -> None:
@@ -329,6 +342,7 @@ def main() -> None:
     test_resolve_value()
     test_split_wav()
     test_wake_gate()
+    test_bilibili_parse()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     if FAIL:
         sys.exit(1)

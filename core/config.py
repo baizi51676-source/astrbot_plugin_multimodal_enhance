@@ -19,10 +19,16 @@ DEFAULT_IMAGE_PROMPT = (
 
 DEFAULT_ENV_PIP_INDEX = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
+DEFAULT_NOTICE_PROMPT = (
+    "视频/音频（视具体情况而定）正在解析中，需耗费时间较多，"
+    "请你发一条消息表示你正在理解其内容"
+)
+
 DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "notice_enabled": True,
     "notice_provider": "",
+    "notice_prompt": DEFAULT_NOTICE_PROMPT,
     "image_enabled": True,
     "image_prompt": DEFAULT_IMAGE_PROMPT,
     "audio_enabled": True,

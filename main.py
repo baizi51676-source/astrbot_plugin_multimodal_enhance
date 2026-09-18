@@ -38,7 +38,7 @@ except Exception:  # pragma: no cover - 旧版 AstrBot 无插件页面 API
     _WEB_AVAILABLE = False
 
 PLUGIN_NAME = "astrbot_plugin_multimodal_enhance"
-PLUGIN_VERSION = "v0.1.5"
+PLUGIN_VERSION = "v0.1.6"
 
 # 插件页面配置表（也用于保存时的类型校验）
 _CONFIG_META = [
@@ -48,6 +48,8 @@ _CONFIG_META = [
      "hint": "解析耗时较长时，先向用户发送「正在分析中」提示。"},
     {"key": "notice_provider", "group": "基础", "label": "提示生成模型", "type": "provider",
      "hint": "留空 = 使用当前会话主模型。"},
+    {"key": "notice_prompt", "group": "基础", "label": "分析中提示词", "type": "textarea",
+     "hint": "作为指令发送给 LLM，由其以当前会话人格生成提示消息；可自由修改。"},
     {"key": "image_enabled", "group": "图片理解增强", "label": "图片理解增强", "type": "bool",
      "hint": "转述图片时注入用户当前消息。"},
     {"key": "image_prompt", "group": "图片理解增强", "label": "转述注入模板", "type": "textarea",
@@ -262,6 +264,36 @@ class Main(Star):
                 self._platform_id(event), self._self_id(event), self._umo(event))
         except Exception:
             return {key: self.conf.get(key) for key in DEFAULTS.keys()}
+
+    async def persona_prompt_for(self, umo: str, platform_name: str = "") -> str:
+        """获取当前会话最终生效的人格提示词（供「分析中提示」等场景使用）。"""
+        try:
+            provider_settings = {}
+            try:
+                cfg = self.context.get_config(umo)
+                provider_settings = cfg.get("provider_settings", {}) if hasattr(cfg, "get") else {}
+            except Exception:
+                pass
+            conversation_persona_id = None
+            try:
+                cm = self.context.conversation_manager
+                cid = await cm.get_curr_conversation_id(umo)
+                if cid:
+                    conv = await cm.get_conversation(umo, cid)
+                    conversation_persona_id = getattr(conv, "persona_id", None) if conv else None
+            except Exception:
+                pass
+            _, persona, _, _ = await self.context.persona_manager.resolve_selected_persona(
+                umo=umo,
+                conversation_persona_id=conversation_persona_id,
+                platform_name=platform_name or "",
+                provider_settings=provider_settings,
+            )
+            if persona and persona.get("prompt"):
+                return str(persona["prompt"]).strip()[:1500]
+        except Exception:
+            pass
+        return ""
 
     async def _api_state(self):
         stt_configured = False

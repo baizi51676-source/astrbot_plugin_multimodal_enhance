@@ -22,7 +22,7 @@ from urllib.parse import unquote, urlparse
 
 from . import llm as llm_utils
 from .config import _to_bool, _to_int, _to_str
-from .media import audio_analyzer, ncm, video_analyzer
+from .media import audio_analyzer, bilibili, ncm, video_analyzer
 from .media.downloader import download_url, pick_video_meta, ytdlp_download, ytdlp_json
 from .media.ffmpeg_tools import decode_pcm, find_tool, probe_media, run_proc, summarize_probe
 
@@ -38,6 +38,7 @@ GOOD_STT_EXTS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".opus"}
 BILI_PATTERN = re.compile(
     r"(?:https?://)?(?:www\.|m\.)?bilibili\.com/video/[A-Za-z0-9]+[^\s\"'<>）)]*"
     r"|(?:https?://)?b23\.tv/[A-Za-z0-9]+"
+    r"|(?:https?://)?bili2233\.cn/[A-Za-z0-9]+"
 )
 DIRECT_MEDIA_PATTERN = re.compile(
     r"https?://[^\s\"'<>）)]+?(?:\.(?:mp3|m4a|wav|flac|aac|ogg|opus|mp4|mov|mkv|webm|flv))"
@@ -344,9 +345,22 @@ class MediaPipeline:
             os.makedirs(workdir, exist_ok=True)
             if flags.get("notice_enabled") and det.takes_time:
                 try:
+                    platform_name = ""
+                    try:
+                        platform_name = str(event.get_platform_name() or "")
+                    except Exception:
+                        pass
+                    persona_prompt = ""
+                    try:
+                        persona_prompt = await self.plugin.persona_prompt_for(
+                            self._umo(event), platform_name)
+                    except Exception:
+                        pass
                     notice = await llm_utils.generate_notice(
                         self.plugin.context, self._umo(event),
                         _sget_str(settings, "notice_provider", ""),
+                        _sget_str(settings, "notice_prompt", ""),
+                        persona_prompt,
                     )
                     # 重要：不能用 event.send()——它会把 _has_send_oper 置 True，
                     # 导致 AstrBot 的 process_stage 判定「已有发送操作」而跳过 LLM 回复。
@@ -733,11 +747,45 @@ class MediaPipeline:
         max_bytes = _sget_int(settings, "video_max_size_mb", 100) * 1024 * 1024
         max_minutes = _sget_int(settings, "video_max_minutes", 10)
         lines = ["【B站视频解析" + ("（引用消息）" if quoted else "") + "】"]
-        info = await ytdlp_json(url, ytdlp)
-        if not info:
+        info = None
+        try:
+            info = await bilibili.fetch_video_info(url)
+        except Exception as exc:
+            self.plugin.log.warn(f"B站 API 解析失败：{exc}")
+
+        if info:
+            if info.get("title"):
+                lines.append(f"标题：{info['title']}")
+            if info.get("owner"):
+                lines.append(f"UP主：{info['owner']}")
+            if info.get("pubdate"):
+                lines.append(f"发布时间：{bilibili.format_pubdate(info['pubdate'])}")
+            if info.get("desc"):
+                lines.append(f"简介：{info['desc']}")
+            duration = info.get("duration") or 0
+            if duration and duration > max_minutes * 60:
+                lines.append(f"（视频时长 {duration / 60:.1f} 分钟，超过上限 {max_minutes} 分钟，未下载解析）")
+                return "\n".join(lines)
+            path = await bilibili.download_video(info, workdir, max_bytes)
+            if not path and ytdlp:
+                # 回退：yt-dlp 通道（少数场景可用）
+                try:
+                    path = await ytdlp_download(url, workdir, ytdlp, max_bytes)
+                except Exception:
+                    path = None
+            if not path:
+                lines.append("（视频下载失败或超过体积上限，未进行画面/音轨解析）")
+                return "\n".join(lines)
+            lines.append(await self._analyze_video_file(path, workdir, ffmpeg, ffprobe,
+                                                        settings, umo))
+            return "\n".join(lines)
+
+        # API 失败：回退 yt-dlp 旧通道
+        legacy = await ytdlp_json(url, ytdlp) if ytdlp else None
+        if not legacy:
             lines.append(f"（未能获取视频信息：{url}）")
             return "\n".join(lines)
-        meta = pick_video_meta(info)
+        meta = pick_video_meta(legacy)
         if meta.get("title"):
             lines.append(f"标题：{meta['title']}")
         if meta.get("uploader"):
