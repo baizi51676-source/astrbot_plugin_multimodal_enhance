@@ -530,14 +530,15 @@ class MediaPipeline:
         probe = await probe_media(path, ffprobe)
         if probe:
             lines.append("元数据：" + (video_analyzer.meta_line(summarize_probe(probe)) or "未知"))
-        text = await self._transcribe(umo, path, ffmpeg, workdir)
+        text = await self._transcribe(umo, path, settings, ffmpeg, workdir)
         if text:
             lines.append(f"转文本：{text[:2000]}")
         else:
             lines.append("（未配置语音转文本模型或转写为空，已跳过转文本）")
         return "\n".join(lines)
 
-    async def _transcribe(self, umo: str, path: str, ffmpeg: str = "ffmpeg",
+    async def _transcribe(self, umo: str, path: str, settings: dict,
+                          ffmpeg: str = "ffmpeg",
                           workdir: str | None = None) -> str:
         try:
             stt = await self.plugin.context.get_using_stt_provider_async(umo)
@@ -545,23 +546,54 @@ class MediaPipeline:
             stt = None
         if stt is None:
             return ""
-        candidates = [path]
+        # 1) 统一转为 16k 单声道 wav（提升兼容性并便于按大小拆分）
+        base = path
         ext = os.path.splitext(path)[1].lower()
-        if ext not in GOOD_STT_EXTS and workdir:
+        if workdir and ext != ".wav":
             wav = os.path.join(workdir, f"stt_{uuid.uuid4().hex[:6]}.wav")
             rc, _, _ = await run_proc(
                 [ffmpeg, "-y", "-i", path, "-vn", "-ac", "1", "-ar", "16000", wav],
-                timeout=120)
+                timeout=180)
             if rc == 0 and os.path.isfile(wav) and os.path.getsize(wav) > 0:
-                candidates.insert(0, wav)
-        for candidate in candidates:
+                base = wav
+        # 2) 超过单段上限（如 MiMo STT 的 10MB）则自动拆分
+        parts = [base]
+        truncated = False
+        chunk_mb = _sget_int(settings, "audio_stt_chunk_mb", 7)
+        if chunk_mb > 0 and workdir:
+            max_bytes = chunk_mb * 1024 * 1024
             try:
-                text = await asyncio.wait_for(stt.get_text(candidate), timeout=120)
+                size = os.path.getsize(base)
+            except OSError:
+                size = 0
+            if size > max_bytes:
+                parts = audio_analyzer.split_wav(base, max_bytes, workdir)
+                if len(parts) > 12:
+                    parts = parts[:12]
+                    truncated = True
+                if len(parts) > 1:
+                    self.plugin.log.info(f"音频超过 {chunk_mb}MB，已拆分为 {len(parts)} 段转写。")
+        # 3) 逐段调用 STT
+        texts: list[str] = []
+        for idx, part in enumerate(parts, 1):
+            try:
+                text = await asyncio.wait_for(stt.get_text(part), timeout=180)
                 if text and str(text).strip():
-                    return str(text).strip()
+                    texts.append(str(text).strip())
             except Exception as exc:
-                self.plugin.log.warn(f"语音转文本失败：{exc}")
-        return ""
+                self.plugin.log.warn(f"语音转文本失败（第{idx}/{len(parts)}段）：{exc}")
+        # 4) 兜底：转码/拆分都未成功时，直接尝试原文件
+        if not texts and base != path:
+            try:
+                text = await asyncio.wait_for(stt.get_text(path), timeout=180)
+                if text and str(text).strip():
+                    texts.append(str(text).strip())
+            except Exception as exc:
+                self.plugin.log.warn(f"语音转文本失败（原文件重试）：{exc}")
+        joined = "".join(texts)
+        if truncated:
+            joined += "……（音频过长，仅转写前12段）"
+        return joined
 
     async def _analyze_audio_url(self, url: str, workdir: str, ffmpeg: str,
                                  ffprobe: str, settings: dict, umo: str) -> str:
@@ -574,7 +606,7 @@ class MediaPipeline:
         probe = await probe_media(dest, ffprobe)
         if probe:
             lines.append("元数据：" + (video_analyzer.meta_line(summarize_probe(probe)) or "未知"))
-        text = await self._transcribe(umo, dest, ffmpeg, workdir)
+        text = await self._transcribe(umo, dest, settings, ffmpeg, workdir)
         if text:
             lines.append(f"转文本：{text[:2000]}")
         else:
@@ -681,7 +713,7 @@ class MediaPipeline:
                 lines.append(f"（画面描述调用失败，模型 {caption_provider}）")
         if result.get("audio_path"):
             audio_lines = ["音轨解析："]
-            text = await self._transcribe(umo, result["audio_path"], ffmpeg, workdir)
+            text = await self._transcribe(umo, result["audio_path"], settings, ffmpeg, workdir)
             if text:
                 audio_lines.append(f"转文本：{text[:2000]}")
             else:
@@ -785,7 +817,7 @@ class MediaPipeline:
                 elif file_ref:
                     path = await self._resolve_value(file_ref, workdir, AUDIO_MAX_BYTES)
                 if path:
-                    text = await self._transcribe(umo, path, ffmpeg, workdir)
+                    text = await self._transcribe(umo, path, settings, ffmpeg, workdir)
                     if text:
                         lines.append(f"语音转文本：{text[:2000]}")
         if len(lines) == 1:

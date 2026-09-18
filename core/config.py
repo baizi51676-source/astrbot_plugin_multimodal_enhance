@@ -32,6 +32,7 @@ DEFAULTS: dict[str, Any] = {
     "audio_deep_mode": "auto",
     "audio_spectrum_enabled": True,
     "audio_spectrum_seg": 5,
+    "audio_stt_chunk_mb": 7,
     "video_enabled": False,
     "video_frames": 6,
     "video_frame_width": 640,

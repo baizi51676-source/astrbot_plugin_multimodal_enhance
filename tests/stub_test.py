@@ -116,6 +116,30 @@ def test_spectrum() -> None:
         check("文本包含汇总", "汇总" in text)
 
 
+def test_split_wav() -> None:
+    print("- WAV 拆分（STT 单段上限）")
+    import tempfile
+    import wave
+    from core.media.audio_analyzer import split_wav
+    with tempfile.TemporaryDirectory() as tmp:
+        wav_path = os.path.join(tmp, "big.wav")
+        frames = 16000 * 60  # 60 秒 16k 单声道 16bit ≈ 1.92MB
+        with wave.open(wav_path, "wb") as fp:
+            fp.setnchannels(1)
+            fp.setsampwidth(2)
+            fp.setframerate(16000)
+            fp.writeframes(b"\x00\x00" * frames)
+        parts = split_wav(wav_path, 500 * 1024, tmp)
+        check("拆分数量 >= 3", len(parts) >= 3)
+        check("每段不超过上限（含页头）",
+              all(os.path.getsize(p) <= 500 * 1024 + 1024 for p in parts))
+        total = 0
+        for part in parts:
+            with wave.open(part, "rb") as fp:
+                total += fp.getnframes()
+        check("帧总数一致", total == frames)
+
+
 # ---------------- 环境管理 ----------------
 
 def test_env_manager() -> None:
@@ -291,6 +315,7 @@ def main() -> None:
     test_env_manager()
     test_pipeline_detect()
     test_resolve_value()
+    test_split_wav()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     if FAIL:
         sys.exit(1)

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 
 BANDS = [
     (20, 60), (60, 120), (120, 250), (250, 500), (500, 1000),
@@ -24,6 +25,48 @@ def has_numpy() -> bool:
 
 def has_librosa() -> bool:
     return importlib.util.find_spec("librosa") is not None
+
+
+def split_wav(path: str, max_bytes: int, workdir: str) -> list[str]:
+    """把 WAV 按大小拆分为多个文件（纯标准库；无法解析时返回原文件）。
+
+    用于绕过 STT 服务的单文件大小限制（如 MiMo STT 的 10MB）。
+    """
+    import wave
+    try:
+        src = wave.open(path, "rb")
+    except Exception:
+        return [path]
+    parts: list[str] = []
+    try:
+        channels = src.getnchannels()
+        sampwidth = src.getsampwidth()
+        framerate = src.getframerate()
+        if src.getcomptype() != "NONE":
+            return [path]
+        bytes_per_frame = max(1, channels * sampwidth)
+        if src.getnframes() * bytes_per_frame + 1024 <= max_bytes:
+            return [path]
+        frames_per_part = max(1, int((max_bytes - 1024) / bytes_per_frame))
+        base = os.path.splitext(os.path.basename(path))[0]
+        index = 0
+        while True:
+            frames = src.readframes(frames_per_part)
+            if not frames:
+                break
+            out = os.path.join(workdir, f"{base}_part{index}.wav")
+            with wave.open(out, "wb") as dst:
+                dst.setnchannels(channels)
+                dst.setsampwidth(sampwidth)
+                dst.setframerate(framerate)
+                dst.writeframes(frames)
+            parts.append(out)
+            index += 1
+    except Exception:
+        return parts or [path]
+    finally:
+        src.close()
+    return parts or [path]
 
 
 # ---------------- 轻量频谱 ----------------

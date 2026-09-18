@@ -73,6 +73,12 @@
     "type": "int",
     "default": 5
   },
+  "audio_stt_chunk_mb": {
+    "description": "STT 单段上限（MB）",
+    "hint": "长音频超过该大小会自动拆分为多段转写（MiMo STT 等模型限制 10MB，建议 ≤7）；0 = 不拆分。",
+    "type": "int",
+    "default": 7
+  },
   "video_enabled": {
     "description": "视频理解",
     "hint": "视频抽帧理解+音轨解析。聊天主模型本身支持视频输入时建议保持关闭；未配置所需模型时自动跳过。",

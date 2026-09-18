@@ -38,7 +38,7 @@ except Exception:  # pragma: no cover - 旧版 AstrBot 无插件页面 API
     _WEB_AVAILABLE = False
 
 PLUGIN_NAME = "astrbot_plugin_multimodal_enhance"
-PLUGIN_VERSION = "v0.1.3"
+PLUGIN_VERSION = "v0.1.4"
 
 # 插件页面配置表（也用于保存时的类型校验）
 _CONFIG_META = [
@@ -68,6 +68,8 @@ _CONFIG_META = [
     {"key": "audio_spectrum_enabled", "group": "音频理解", "label": "频谱数据（文本）",
      "type": "bool"},
     {"key": "audio_spectrum_seg", "group": "音频理解", "label": "频谱分段秒数", "type": "int"},
+    {"key": "audio_stt_chunk_mb", "group": "音频理解", "label": "STT 单段上限（MB）", "type": "int",
+     "hint": "长音频超过该大小会自动拆分后分段转写（MiMo 等有 10MB 限制，建议 ≤7）；0 = 不拆分。"},
     {"key": "video_enabled", "group": "视频理解", "label": "视频理解", "type": "bool",
      "hint": "聊天主模型本身支持视频输入时建议保持关闭。"},
     {"key": "video_frames", "group": "视频理解", "label": "抽帧数量", "type": "int"},
@@ -265,6 +267,8 @@ class Main(Star):
         stt_configured = False
         try:
             stt_configured = (await self.context.get_using_stt_provider_async()) is not None
+            if not stt_configured:
+                stt_configured = len(self.context.get_all_stt_providers()) > 0
         except Exception:
             pass
         from .core.media import audio_analyzer
