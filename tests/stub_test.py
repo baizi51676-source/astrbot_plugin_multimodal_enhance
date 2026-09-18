@@ -165,6 +165,39 @@ def test_bilibili_parse() -> None:
     check("分析中提示词默认值", "正在理解" in str(DEFAULTS.get("notice_prompt", "")))
 
 
+def test_voice_fallback() -> None:
+    print("- 语音解析兜底（原生 STT 替换后）")
+    pipeline = _make_pipeline()
+    flags = {"audio_enabled": True, "video_enabled": True}
+    # 1) 直接语音被替换：chain 无 Record，raw 里有 record
+    ev = _make_event([Plain("转录文本")], text="转录文本")
+    ev.message_obj.raw_message = {
+        "message": [{"type": "record",
+                     "data": {"file": "a.amr", "url": "https://x/a.amr"}}]}
+    det = pipeline.detect(ev, flags, {})
+    check("原生替换后仍检测到语音（raw 兜底）",
+          len(det.raw_voices) == 1 and det.raw_voices[0]["quoted"] is False)
+    # 2) 引用链无语音：进入探测
+    ev2 = _make_event([Reply(id="42", chain=[Plain("转录")])])
+    det2 = pipeline.detect(ev2, flags, {})
+    check("引用链无语音时进入探测", det2.reply_probe_ids == ["42"])
+    # 3) 正常 Record 不受影响
+    det3 = pipeline.detect(_make_event([Record(file="base64://AAAA")]), flags, {})
+    check("正常 Record 仍走组件路径",
+          len(det3.voices) == 1 and not det3.raw_voices)
+    # 4) 探测函数（模拟 OneBot get_msg）
+    class FakeBot:
+        async def call_action(self, action, **kwargs):
+            if action == "get_msg":
+                return {"message": [{"type": "record",
+                                     "data": {"file": "q.amr", "url": "https://x/q.amr"}}]}
+            raise RuntimeError(action)
+    ev2.bot = FakeBot()
+    asyncio.run(pipeline._probe_reply_voices(ev2, det2))
+    check("探测到被引用语音并计入待解析",
+          any(r.get("quoted") for r in det2.raw_voices))
+
+
 # ---------------- 环境管理 ----------------
 
 def test_env_manager() -> None:
@@ -343,6 +376,7 @@ def main() -> None:
     test_split_wav()
     test_wake_gate()
     test_bilibili_parse()
+    test_voice_fallback()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     if FAIL:
         sys.exit(1)

@@ -38,7 +38,7 @@ except Exception:  # pragma: no cover - 旧版 AstrBot 无插件页面 API
     _WEB_AVAILABLE = False
 
 PLUGIN_NAME = "astrbot_plugin_multimodal_enhance"
-PLUGIN_VERSION = "v0.1.6"
+PLUGIN_VERSION = "v0.1.7"
 
 # 插件页面配置表（也用于保存时的类型校验）
 _CONFIG_META = [

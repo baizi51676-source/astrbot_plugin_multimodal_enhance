@@ -70,6 +70,8 @@ class Detected:
     audio_files: list = field(default_factory=list)     # (comp, quoted)
     videos: list = field(default_factory=list)          # (comp, quoted)
     reply_ids: list = field(default_factory=list)       # 无 chain 的引用消息 ID
+    reply_probe_ids: list = field(default_factory=list) # chain 无媒体的引用消息 ID（探测原生 STT 替换）
+    raw_voices: list = field(default_factory=list)      # {"seg": dict, "quoted": bool, "source": str}
     music_refs: list = field(default_factory=list)      # (ref, quoted)
     bili_urls: list = field(default_factory=list)       # (url, quoted)
     direct_audio_urls: list = field(default_factory=list)
@@ -80,13 +82,14 @@ class Detected:
     def empty(self) -> bool:
         return not any([
             self.voices, self.audio_files, self.videos, self.reply_ids,
-            self.music_refs, self.bili_urls,
+            self.raw_voices, self.music_refs, self.bili_urls,
             self.direct_audio_urls, self.direct_video_urls,
         ])
 
     @property
     def takes_time(self) -> bool:
-        return bool(self.videos or self.music_refs or self.bili_urls
+        return bool(self.videos or self.voices or self.audio_files
+                    or self.raw_voices or self.music_refs or self.bili_urls
                     or self.direct_audio_urls or self.direct_video_urls)
 
 
@@ -221,14 +224,19 @@ class MediaPipeline:
         for comp in comps:
             name = type(comp).__name__.lower()
             if name == "reply":
+                rid = str(getattr(comp, "id", "") or "")
                 chain = getattr(comp, "chain", None) or []
+                chain_voice = False
                 if chain:
+                    before_voices = len(det.voices)
                     for sub in chain:
                         handle_comp(sub, True)
-                else:
-                    rid = str(getattr(comp, "id", "") or "")
-                    if rid:
-                        det.reply_ids.append(rid)
+                    chain_voice = len(det.voices) > before_voices
+                elif rid:
+                    det.reply_ids.append(rid)
+                # 原生 STT 可能已把被引用语音替换成文本：记下 ID 待异步探测
+                if rid and chain and not chain_voice and audio_on:
+                    det.reply_probe_ids.append(rid)
                 quoted_text = str(getattr(comp, "message_str", "") or "")
                 quoted_text += "".join(
                     str(getattr(sub, "text", "") or "")
@@ -243,6 +251,18 @@ class MediaPipeline:
 
         scan_text(str(getattr(event, "message_str", "") or ""), False)
 
+        # 原生 STT 也可能把本条消息的语音替换成文本：从原始消息兜底找语音
+        if audio_on and not det.voices:
+            for seg in self._raw_segments(event):
+                if not isinstance(seg, dict):
+                    continue
+                if str(seg.get("type", "")).lower() not in ("record", "voice"):
+                    continue
+                data = seg.get("data") or {}
+                if isinstance(data, dict) and (data.get("url") or data.get("file")):
+                    det.raw_voices.append(
+                        {"seg": data, "quoted": False, "source": "raw"})
+
         # 诊断日志：有媒体但被关 / 有没提取出任何东西的组件
         if det.empty and det.seen_gated:
             self.plugin.log.info(f"检测到媒体但对应功能未启用：{'、'.join(sorted(set(det.seen_gated)))}")
@@ -254,9 +274,52 @@ class MediaPipeline:
     def _det_counts(det: Detected) -> tuple:
         return (
             len(det.voices), len(det.audio_files), len(det.videos),
-            len(det.reply_ids), len(det.music_refs), len(det.bili_urls),
+            len(det.reply_ids), len(det.reply_probe_ids), len(det.raw_voices),
+            len(det.music_refs), len(det.bili_urls),
             len(det.direct_audio_urls), len(det.direct_video_urls),
         )
+
+    @staticmethod
+    def _raw_segments(event) -> list:
+        """从原始消息对象中提取消息段列表（兼容 dict / Event / CQ 字符串）。"""
+        try:
+            raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        except Exception:
+            return []
+        if raw is None:
+            return []
+        segs = None
+        if isinstance(raw, dict):
+            segs = raw.get("message")
+        if segs is None:
+            segs = getattr(raw, "message", None)
+        if isinstance(segs, list):
+            return segs
+        cq = None
+        if isinstance(raw, dict):
+            cq = raw.get("raw_message")
+        if cq is None:
+            cq = getattr(raw, "raw_message", None)
+        if isinstance(cq, str) and "[cq:record" in cq.lower():
+            m = re.search(r"\[CQ:record,([^\]]+)\]", cq, re.IGNORECASE)
+            if m:
+                params = dict(re.findall(r"([A-Za-z_]+)=([^,\]]+)", m.group(1)))
+                return [{"type": "record", "data": params}]
+        return []
+
+    @staticmethod
+    def _event_bot(event):
+        """获取平台 Bot 客户端（用于 get_msg / get_record 调用）。"""
+        candidates = [getattr(event, "bot", None)]
+        try:
+            raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+            candidates.append(getattr(raw, "bot", None))
+        except Exception:
+            pass
+        for bot in candidates:
+            if bot is not None and hasattr(bot, "call_action"):
+                return bot
+        return None
 
     @staticmethod
     def _add_music_ref(det: Detected, ref, quoted: bool) -> None:
@@ -333,6 +396,11 @@ class MediaPipeline:
                 return
             settings = self.plugin.effective_settings_for(event)
             det = self.detect(event, flags, settings)
+            if det.reply_probe_ids:
+                try:
+                    await self._probe_reply_voices(event, det)
+                except Exception:
+                    pass
             if det.empty:
                 return
             key = self._key(event)
@@ -374,6 +442,40 @@ class MediaPipeline:
         except Exception as exc:
             self.plugin.log.error(f"消息检测异常：{exc}")
 
+    async def _probe_reply_voices(self, event, det: Detected) -> None:
+        """探测被引用消息中是否含语音（原生 STT 开启时 Record 会被替换成文本）。"""
+        event_bot = self._event_bot(event)
+        if event_bot is None:
+            return
+        seen = {str(ref.get("seg", {}).get("file", "")) for ref in det.raw_voices}
+        for rid in det.reply_probe_ids[:2]:
+            try:
+                mid = int(rid)
+            except Exception:
+                continue
+            try:
+                data = await asyncio.wait_for(
+                    event_bot.call_action("get_msg", message_id=mid), timeout=15)
+            except Exception as exc:
+                self.plugin.log.warn(f"引用消息探测失败：{exc}")
+                continue
+            segments = data.get("message") if isinstance(data, dict) else None
+            if not isinstance(segments, list):
+                continue
+            for seg in segments:
+                if not isinstance(seg, dict):
+                    continue
+                if str(seg.get("type", "")).lower() not in ("record", "voice"):
+                    continue
+                sd = seg.get("data") or {}
+                if not isinstance(sd, dict):
+                    continue
+                key = str(sd.get("file") or sd.get("url") or "")
+                if key and key in seen:
+                    continue
+                seen.add(key)
+                det.raw_voices.append({"seg": sd, "quoted": True, "source": "reply"})
+
     async def _run(self, event, det: Detected, flags: dict, settings: dict,
                    workdir: str, key: str) -> None:
         try:
@@ -406,17 +508,20 @@ class MediaPipeline:
         ffprobe = find_tool("ffprobe", "") or "ffprobe"
         ytdlp = find_tool("yt-dlp", conf.str("env_ytdlp_path")) or "yt-dlp"
         parts: list[str] = []
-
         for idx, (comp, quoted) in enumerate((det.voices + det.audio_files)[:3], 1):
             parts.append(await self._analyze_audio_component(
                 comp, quoted, idx, workdir, ffmpeg, ffprobe, settings, umo))
-
+        for ref in det.raw_voices[:3]:
+            parts.append(await self._analyze_raw_voice(
+                event, ref, workdir, ffmpeg, ffprobe, settings, umo))
         for ref, quoted in det.music_refs[:3]:
             parts.append(await self._analyze_music_ref(ref, quoted, workdir, ffmpeg, settings))
-
         for url in det.direct_audio_urls[:2]:
             parts.append(await self._analyze_audio_url(url, workdir, ffmpeg, ffprobe,
                                                        settings, umo))
+        for rid in det.reply_ids[:2]:
+            parts.append(await self._analyze_reply_id(event, rid, workdir, ffmpeg,
+                                                      ffprobe, settings, umo))
 
         if flags.get("video_enabled"):
             for idx, (comp, quoted) in enumerate(det.videos[:2], 1):
@@ -428,9 +533,6 @@ class MediaPipeline:
             for url in det.direct_video_urls[:2]:
                 parts.append(await self._analyze_direct_video(url, workdir, ffmpeg,
                                                               ffprobe, settings, umo))
-            for rid in det.reply_ids[:2]:
-                parts.append(await self._analyze_reply_id(event, rid, workdir, ffmpeg,
-                                                          ffprobe, settings, umo))
         return parts
 
     # -------- 媒体落地（核心修复） --------
@@ -543,6 +645,63 @@ class MediaPipeline:
         path = await self._resolve_media(comp, workdir, AUDIO_MAX_BYTES)
         if not path:
             lines.append("（无法获取到音频文件，已跳过）")
+            return "\n".join(lines)
+        probe = await probe_media(path, ffprobe)
+        if probe:
+            lines.append("元数据：" + (video_analyzer.meta_line(summarize_probe(probe)) or "未知"))
+        text = await self._transcribe(umo, path, settings, ffmpeg, workdir)
+        if text:
+            lines.append(f"转文本：{text[:2000]}")
+        else:
+            lines.append("（未配置语音转文本模型或转写为空，已跳过转文本）")
+        return "\n".join(lines)
+
+    async def _resolve_record_seg(self, event, seg_data: dict, workdir: str,
+                                  max_bytes: int) -> str | None:
+        """把原始消息段中的语音（url / file）落地为本地文件。"""
+        url = str(seg_data.get("url") or "")
+        if url.startswith("http"):
+            dest = os.path.join(workdir, f"rv_{uuid.uuid4().hex[:6]}.amr")
+            ok, _m = await download_url(url, dest, max_bytes)
+            if ok:
+                return dest
+        file_ref = str(seg_data.get("file") or seg_data.get("path") or "")
+        if file_ref:
+            resolved = await self._resolve_value(file_ref, workdir, max_bytes)
+            if resolved:
+                return resolved
+        event_bot = self._event_bot(event)
+        if event_bot is not None and file_ref:
+            try:
+                data = await asyncio.wait_for(
+                    event_bot.call_action("get_record", file=file_ref, out_format="wav"),
+                    timeout=15)
+            except Exception:
+                data = None
+            if isinstance(data, dict):
+                for key in ("file", "path"):
+                    p = str(data.get(key) or "")
+                    if p and os.path.isfile(p):
+                        return p
+                u = str(data.get("url") or "")
+                if u.startswith("http"):
+                    dest = os.path.join(workdir, f"rv_{uuid.uuid4().hex[:6]}.wav")
+                    ok, _m = await download_url(u, dest, max_bytes)
+                    if ok:
+                        return dest
+        self.plugin.log.warn(f"语音落地失败（原始消息段）：{seg_data}")
+        return None
+
+    async def _analyze_raw_voice(self, event, ref: dict, workdir: str, ffmpeg: str,
+                                 ffprobe: str, settings: dict, umo: str) -> str:
+        """解析 raw 兜底找到的语音（原生 STT 已把 Record 替换成文本的场景）。"""
+        quoted = bool(ref.get("quoted"))
+        label = "引用消息中的语音消息" if quoted else "语音消息"
+        lines = [f"【音频解析】来源：{label}"]
+        path = await self._resolve_record_seg(
+            event, ref.get("seg") or {}, workdir, AUDIO_MAX_BYTES)
+        if not path:
+            lines.append("（无法获取到语音文件，已跳过）")
             return "\n".join(lines)
         probe = await probe_media(path, ffprobe)
         if probe:
@@ -821,8 +980,8 @@ class MediaPipeline:
                                 ffprobe: str, settings: dict, umo: str) -> str:
         """兜底：Reply.chain 为空时，用 OneBot get_msg 拉取被引用消息再解析。"""
         lines = ["【引用消息解析（API 获取）】"]
-        event_bot = getattr(event, "bot", None)
-        if event_bot is None or not hasattr(event_bot, "call_action"):
+        event_bot = self._event_bot(event)
+        if event_bot is None:
             lines.append("（当前环境不支持引用消息获取，已跳过）")
             return "\n".join(lines)
         try:
