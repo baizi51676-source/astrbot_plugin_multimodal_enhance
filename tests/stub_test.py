@@ -167,6 +167,22 @@ class Reply:
         self.message_str = message_str
 
 
+class Json:
+    def __init__(self, data):
+        self.data = data
+
+
+class Music:
+    def __init__(self, _type="", id=0):
+        self._type = _type
+        self.id = id
+
+
+class Unknown:
+    def __init__(self, text=""):
+        self.text = text
+
+
 def _make_pipeline():
     from core.config import PluginConfig
     from core.logger import PluginLogger
@@ -224,6 +240,21 @@ def test_pipeline_detect() -> None:
         Reply(id="7", message_str="分享 https://music.163.com/song?id=5"),
     ]), flags, {})
     check("识别引用文本中的音乐链接", len(det6.music_refs) == 1 and det6.music_refs[0][1] is True)
+
+    # 7) 网易云分享卡片（Json 组件）
+    card = Json({"app": "com.tencent.structmsg",
+                 "meta": {"music": {"jumpUrl": "https://163cn.tv/AbCdEf", "title": "某歌"}}})
+    det7 = pipeline.detect(_make_event([card]), flags, {})
+    check("识别网易云分享卡片",
+          len(det7.music_refs) == 1 and det7.music_refs[0][0] == ("short", "AbCdEf"))
+
+    # 8) Music 组件（type=163 + id）
+    det8 = pipeline.detect(_make_event([Music(_type="163", id=12345)]), flags, {})
+    check("识别 Music 组件", any(r[0] == ("id", "12345") for r in det8.music_refs))
+
+    # 9) 引用链中的分享卡片
+    det9 = pipeline.detect(_make_event([Reply(id="8", chain=[card])]), flags, {})
+    check("识别引用链中的卡片", len(det9.music_refs) == 1 and det9.music_refs[0][1] is True)
 
 
 def test_resolve_value() -> None:

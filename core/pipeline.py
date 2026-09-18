@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 import re
 import shutil
@@ -170,10 +171,7 @@ class MediaPipeline:
             if not text:
                 return
             if links_on:
-                ref = ncm.extract_song_ref(text)
-                if ref and all(existing[0] != ref or existing[1] != quoted
-                               for existing in det.music_refs):
-                    det.music_refs.append((ref, quoted))
+                self._add_music_ref(det, ncm.extract_song_ref(text), quoted)
             if bili_on:
                 for match in BILI_PATTERN.findall(text):
                     url = match if match.startswith("http") else f"https://{match}"
@@ -196,13 +194,36 @@ class MediaPipeline:
         except Exception:
             comps = []
 
+        unknown: list[str] = []
+
+        def handle_comp(comp, quoted: bool) -> None:
+            """处理普通/未知组件：尝试提取链接与媒体（Json 卡片 / Music / Unknown 等）。"""
+            name = type(comp).__name__.lower()
+            if name in ("plain", "at", "face", "poke", "image", "node", "nodes", "reply"):
+                return
+            before = self._det_counts(det)
+            if name == "music":
+                m_type = str(getattr(comp, "_type", "") or "")
+                m_id = str(getattr(comp, "id", "") or "")
+                if links_on and m_type == "163" and m_id.isdigit():
+                    self._add_music_ref(det, ("id", m_id), quoted)
+            blob = self._comp_blob(comp)
+            if blob:
+                scan_text(blob, quoted)
+                if links_on:
+                    self._add_music_ref(det, self._music_ref_from_blob(blob), quoted)
+            classify(comp, quoted)
+            if self._det_counts(det) == before:
+                suffix = "（引用）" if quoted else ""
+                unknown.append(type(comp).__name__ + suffix)
+
         for comp in comps:
             name = type(comp).__name__.lower()
             if name == "reply":
                 chain = getattr(comp, "chain", None) or []
                 if chain:
                     for sub in chain:
-                        classify(sub, True)
+                        handle_comp(sub, True)
                 else:
                     rid = str(getattr(comp, "id", "") or "")
                     if rid:
@@ -217,21 +238,70 @@ class MediaPipeline:
             elif name in _KNOWN_COMP_NAMES:
                 continue
             else:
-                classify(comp, False)
+                handle_comp(comp, False)
 
         scan_text(str(getattr(event, "message_str", "") or ""), False)
 
-        # 诊断日志：有媒体但被关 / 有陌生组件
+        # 诊断日志：有媒体但被关 / 有没提取出任何东西的组件
         if det.empty and det.seen_gated:
             self.plugin.log.info(f"检测到媒体但对应功能未启用：{'、'.join(sorted(set(det.seen_gated)))}")
-        elif det.empty:
-            unknown = [
-                type(comp).__name__ for comp in comps
-                if type(comp).__name__.lower() not in _KNOWN_COMP_NAMES
-            ]
-            if unknown:
-                self.plugin.log.info(f"消息含未处理组件：{sorted(set(unknown))}")
+        elif det.empty and unknown:
+            self.plugin.log.info(f"消息含未处理组件：{sorted(set(unknown))}")
         return det
+
+    @staticmethod
+    def _det_counts(det: Detected) -> tuple:
+        return (
+            len(det.voices), len(det.audio_files), len(det.videos),
+            len(det.reply_ids), len(det.music_refs), len(det.bili_urls),
+            len(det.direct_audio_urls), len(det.direct_video_urls),
+        )
+
+    @staticmethod
+    def _add_music_ref(det: Detected, ref, quoted: bool) -> None:
+        if not ref:
+            return
+        if any(existing[0] == ref and existing[1] == quoted for existing in det.music_refs):
+            return
+        det.music_refs.append((ref, quoted))
+
+    @staticmethod
+    def _comp_blob(comp) -> str:
+        """把组件里可读的文本/JSON 抽取为一段文本（供链接扫描）。"""
+        parts: list[str] = []
+        data = getattr(comp, "data", None)
+        if isinstance(data, dict):
+            try:
+                parts.append(json.dumps(data, ensure_ascii=False))
+            except Exception:
+                parts.append(str(data))
+        elif isinstance(data, str) and data:
+            parts.append(data)
+        for attr in ("_type", "title", "content", "url", "audio", "text", "value", "raw"):
+            value = getattr(comp, attr, None)
+            if isinstance(value, str) and value:
+                parts.append(f"{attr}={value}")
+            elif isinstance(value, dict):
+                try:
+                    parts.append(json.dumps(value, ensure_ascii=False))
+                except Exception:
+                    pass
+        comp_id = getattr(comp, "id", None)
+        if comp_id is not None and str(comp_id).isdigit():
+            parts.append(f"id={comp_id}")
+        return "\n".join(parts)[:6000]
+
+    @staticmethod
+    def _music_ref_from_blob(blob: str):
+        ref = ncm.extract_song_ref(blob)
+        if ref:
+            return ref
+        m = re.search(r'"type"\s*:\s*"163"[^}]*?"id"\s*:\s*"?(\d+)', blob)
+        if not m:
+            m = re.search(r'"id"\s*:\s*"?(\d+)"?[^}]*?"type"\s*:\s*"163"', blob)
+        if m:
+            return ("id", m.group(1))
+        return None
 
     async def _send_proactive(self, event, text: str) -> None:
         """主动发送消息（不触碰 event 的 _has_send_oper，避免主流程跳过 LLM 回复）。"""
