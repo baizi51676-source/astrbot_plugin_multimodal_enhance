@@ -198,6 +198,49 @@ def test_voice_fallback() -> None:
           any(r.get("quoted") for r in det2.raw_voices))
 
 
+def test_native_stt_control() -> None:
+    print("- 原生语音转写接管（截断）")
+    from core import native_stt as ns
+    from core.config import PluginConfig
+
+    class P:
+        pass
+
+    plugin = P()
+    plugin.conf = PluginConfig({"audio_enabled": True, "cut_native_stt": True})
+    plugin.resolve_flags_for_event = lambda e: {
+        "audio_enabled": plugin.conf.bool("audio_enabled", True)}
+    plugin.effective_settings_for = lambda e: {
+        "audio_file_enabled": True, "cut_native_stt": True}
+    ctl = ns.NativeSTTControl()
+    ctl.plugin = plugin
+
+    class S:
+        pass
+
+    stage = S()
+    stage.stt_settings = {"enable": True, "provider_id": "mimo"}
+    ev = S()
+    ctl.sync_stage(stage, ev)
+    check("插件开启 → 原生 STT 被截断",
+          stage.stt_settings.get("enable") is False
+          and bool(stage.stt_settings.get("_mme_cut")))
+
+    plugin.effective_settings_for = lambda e: {
+        "audio_file_enabled": True, "cut_native_stt": False}
+    ctl.sync_stage(stage, ev)
+    check("关闭接管 → 恢复原生设置",
+          stage.stt_settings.get("enable") is True
+          and not stage.stt_settings.get("_mme_cut"))
+
+    plugin.effective_settings_for = lambda e: {
+        "audio_file_enabled": True, "cut_native_stt": True}
+    plugin.conf = PluginConfig({"audio_enabled": False, "cut_native_stt": True})
+    stage.stt_settings = {"enable": True}
+    ctl.sync_stage(stage, ev)
+    check("音频功能关闭 → 不截断", stage.stt_settings.get("enable") is True)
+
+
 # ---------------- 环境管理 ----------------
 
 def test_env_manager() -> None:
@@ -377,6 +420,7 @@ def main() -> None:
     test_wake_gate()
     test_bilibili_parse()
     test_voice_fallback()
+    test_native_stt_control()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     if FAIL:
         sys.exit(1)

@@ -25,6 +25,12 @@
     "default": "视频/音频（视具体情况而定）正在解析中，需耗费时间较多，请你发一条消息表示你正在理解其内容",
     "obvious_hint": true
   },
+  "cut_native_stt": {
+    "description": "接管语音转写（截断原生）",
+    "hint": "开启后：插件启用时不再执行 AstrBot 原生「语音转文字」，语音统一由插件解析；关闭后保留原生转写。",
+    "type": "bool",
+    "default": true
+  },
   "image_enabled": {
     "description": "图片理解增强",
     "hint": "向图转文模型转述图片时，注入用户当前消息，使转述更贴合用户需求。",

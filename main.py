@@ -20,7 +20,7 @@ from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
 
-from .core import caption_patch, env_manager
+from .core import caption_patch, env_manager, native_stt as native_stt_ctl
 from .core.config import DEFAULTS, PluginConfig, _to_bool, _to_int
 from .core.logger import PluginLogger
 from .core.pipeline import MediaPipeline
@@ -38,7 +38,7 @@ except Exception:  # pragma: no cover - 旧版 AstrBot 无插件页面 API
     _WEB_AVAILABLE = False
 
 PLUGIN_NAME = "astrbot_plugin_multimodal_enhance"
-PLUGIN_VERSION = "v0.1.7"
+PLUGIN_VERSION = "v0.1.8"
 
 # 插件页面配置表（也用于保存时的类型校验）
 _CONFIG_META = [
@@ -50,6 +50,8 @@ _CONFIG_META = [
      "hint": "留空 = 使用当前会话主模型。"},
     {"key": "notice_prompt", "group": "基础", "label": "分析中提示词", "type": "textarea",
      "hint": "作为指令发送给 LLM，由其以当前会话人格生成提示消息；可自由修改。"},
+    {"key": "cut_native_stt", "group": "基础", "label": "接管语音转写（截断原生）", "type": "bool",
+     "hint": "开启后：插件启用时不再执行 AstrBot 原生「语音转文字」，语音统一由插件解析（避免重复转写）。"},
     {"key": "image_enabled", "group": "图片理解增强", "label": "图片理解增强", "type": "bool",
      "hint": "转述图片时注入用户当前消息。"},
     {"key": "image_prompt", "group": "图片理解增强", "label": "转述注入模板", "type": "textarea",
@@ -133,6 +135,12 @@ class Main(Star):
             caption_patch.install(self)
         except Exception as exc:
             self.log.warn(f"图片增强补丁安装异常：{exc}")
+        self._native_stt = None
+        try:
+            self._native_stt = native_stt_ctl.NativeSTTControl()
+            self._native_stt.install(self)
+        except Exception as exc:
+            self.log.warn(f"原生语音转写接管安装异常：{exc}")
         self.log.info(f"插件初始化完成（{PLUGIN_VERSION}）。工作目录：{self.workdir_base}")
 
     # ---------------- 辅助 ----------------
@@ -187,6 +195,11 @@ class Main(Star):
             caption_patch.install(self)
         except Exception:
             pass
+        try:
+            if getattr(self, "_native_stt", None) is not None:
+                self._native_stt.install(self)
+        except Exception:
+            pass
         self.log.info(
             "AstrBot 已加载。图片增强补丁：" + ("已安装" if caption_patch.installed() else "未安装"))
 
@@ -208,6 +221,11 @@ class Main(Star):
     async def terminate(self):
         try:
             caption_patch.uninstall(self)
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_native_stt", None) is not None:
+                self._native_stt.uninstall()
         except Exception:
             pass
         self.log.info("插件已停止。")

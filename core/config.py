@@ -29,6 +29,7 @@ DEFAULTS: dict[str, Any] = {
     "notice_enabled": True,
     "notice_provider": "",
     "notice_prompt": DEFAULT_NOTICE_PROMPT,
+    "cut_native_stt": True,
     "image_enabled": True,
     "image_prompt": DEFAULT_IMAGE_PROMPT,
     "audio_enabled": True,
