@@ -14,9 +14,10 @@
   - 可选「声纹包式深度分析」：BPM / 调性 / 音色四维 / 谐波占比 / 情绪等摘要。
 - **视频理解**
   - 视频抽帧 + 逐帧画面描述 + 音轨解析（转文本或频谱）；
+  - 支持直接发送的视频，以及回复/引用某条视频（@Bot 问「这是什么」也能解析）；
   - B站链接：自动获取标题 / 简介 / 发布时间，并按上限下载解析（默认 ≤10 分钟、≤100MB）；
   - 聊天主模型本身支持视频输入时，建议保持关闭。
-- **插件页面**：总览状态、配置管理（与 AstrBot 插件配置同一份文件）、插件日志（导出 + SSE 实时流）、环境配置（依赖检测/安装/清理）。
+- **插件页面**：总览（按 bot 分页）、配置（默认 + 每个 bot 分页的详细覆写，与 AstrBot 插件配置同一份文件）、插件日志（导出 + SSE 实时流）、环境配置（一键安装全部依赖 / 清理临时文件）。
 - **多 bot 适配**：全局默认配置 + 按单个 bot 覆写开关。
 
 ## 安装
@@ -41,7 +42,7 @@ https://github.com/baizi51676-source/astrbot_plugin_multimodal_enhance
 
 1. 安装插件并重载；
 2. 打开插件页面「配置」，按需开启图片 / 音频 / 视频功能；
-3. 如需音频深度分析，在「环境配置」中一键安装可选依赖；
+3. 在「环境配置」中可一键安装全部功能依赖（numpy / librosa / scipy / soundfile）；
 4. 在群里发送图片、语音、音乐链接或视频链接即可。
 
 ## 配置说明
@@ -58,14 +59,15 @@ https://github.com/baizi51676-source/astrbot_plugin_multimodal_enhance
   {
     "name": "示例规则",
     "bots": ["1234567890", "my_instance"],
-    "enable_image": true,
-    "enable_audio": true,
-    "enable_video": true,
-    "enable_notice": true
+    "overrides": {
+      "video_enabled": true,
+      "video_frames": 4
+    }
   }
 ]
 ```
 
+推荐直接在插件页面「配置 → Bot 分页」中可视化编辑覆写项；未覆写的项自动跟随默认配置。
 未匹配任何条目的 bot 使用全局配置。
 
 ## 工作原理（简述）

@@ -24,7 +24,12 @@
 
   <main>
     <section class="tab-panel active" id="panel-overview">
+      <div class="subtabs" id="overview-subtabs"></div>
       <div class="cards" id="overview-cards"></div>
+      <div class="block">
+        <div class="block-head"><h2>覆写项</h2></div>
+        <ul class="override-list" id="overview-overrides"><li class="muted">—</li></ul>
+      </div>
       <div class="block">
         <div class="block-head">
           <h2>最近错误日志</h2>
@@ -40,11 +45,12 @@
           <h2>配置</h2>
           <div class="btn-row">
             <button class="btn" id="reload-config">重新读取</button>
-            <button class="btn primary" id="save-config">保存配置</button>
+            <button class="btn primary" id="save-config">保存当前页</button>
           </div>
         </div>
-        <p class="muted small">提示：这里的修改与 AstrBot 插件配置（同一份配置文件）双向同步。</p>
-        <div id="config-form"></div>
+        <p class="muted small">默认配置 + 每个 Bot 分页覆写（未覆写的项自动跟随默认）；与 AstrBot 插件配置为同一份文件，双向同步。</p>
+        <div class="subtabs" id="config-subtabs"></div>
+        <div id="config-body"></div>
       </div>
     </section>
 
@@ -75,13 +81,12 @@
       </div>
       <div class="block">
         <div class="block-head">
-          <h2>可选依赖安装（音频深度分析）</h2>
+          <h2>一键配置所有功能依赖</h2>
           <div class="btn-row">
-            <button class="btn" id="install-optional">安装 librosa / scipy / soundfile</button>
-            <button class="btn" id="install-numpy">安装 numpy</button>
+            <button class="btn primary" id="install-all">一键安装（numpy · librosa · scipy · soundfile）</button>
           </div>
         </div>
-        <p class="muted small">安装通过当前 AstrBot 的 Python 环境执行（pip），使用上方配置的镜像源；安装期间请勿关闭页面。</p>
+        <p class="muted small">不检测缺失情况，统一安装全部功能依赖（使用上方配置的 pip 镜像源）；安装期间请勿关闭页面。</p>
         <pre class="install-output" id="install-output">（暂无安装任务）</pre>
       </div>
     </section>

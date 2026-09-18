@@ -13,6 +13,7 @@ from .media.ffmpeg_tools import find_tool, run_proc
 
 OPTIONAL_PACKAGES = ["librosa", "scipy", "soundfile"]
 BASE_PACKAGES = ["numpy"]
+ALL_PACKAGES = ["numpy", "librosa", "scipy", "soundfile"]
 
 _install_state: dict = {
     "running": False,

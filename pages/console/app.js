@@ -1,11 +1,13 @@
-/* 多模态理解增强控制台（依赖 window.AstrBotPluginPage bridge） */
+/* 多模态理解增强控制台（总览/配置按 bot 分页；依赖 window.AstrBotPluginPage bridge） */
 const bridge = window.AstrBotPluginPage;
 const $ = (sel) => document.querySelector(sel);
 
 let providerOptions = [];
 let configMeta = [];
-let currentConfig = {};
-let lastSeq = 0;
+let globalConfig = {};
+let botsList = [];
+let overviewData = null;
+let workspace = { configTab: "default", botDraft: null };
 let sseSubId = null;
 let installPolling = null;
 
@@ -30,7 +32,7 @@ function badge(on) {
     : '<span class="badge off">未启用</span>';
 }
 
-/* ---------------- 标签页 ---------------- */
+/* ---------------- 顶层标签页 ---------------- */
 document.querySelectorAll(".tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
@@ -44,38 +46,79 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
   });
 });
 
-/* ---------------- 总览 ---------------- */
+/* ---------------- 总览（按 bot 分页） ---------------- */
 async function loadOverview() {
   try {
-    const data = await bridge.apiGet("state");
-    const f = data.features || {};
-    const pipeline = data.pipeline || {};
-    const cards = [
-      ["总开关", badge(data.enabled)],
-      ["图片增强", badge(f.image)],
-      ["音频理解", badge(f.audio)],
-      ["视频理解", badge(f.video)],
-      ["分析中提示", badge(f.notice)],
-      ["图片转述注入", data.caption_patch_installed ? "已安装" : "未安装"],
-      ["图转文模型", escapeHtml(data.caption_provider || "（未配置）")],
-      ["语音转文本", data.stt_configured ? "已配置" : "（未配置）"],
-      ["音频深度分析", data.librosa ? "librosa 可用" : "轻量模式（未装 librosa）"],
-      ["进行中的解析", String(pipeline.active_tasks ?? 0)],
-      ["版本", escapeHtml(data.version || "-")],
-    ];
-    $("#overview-cards").innerHTML = cards
-      .map(([k, v]) => `<div class="card"><div class="k">${escapeHtml(k)}</div><div class="v">${v}</div></div>`)
-      .join("");
-    const errors = data.recent_errors || [];
-    $("#overview-errors").innerHTML = errors.length
-      ? errors.map((e) => `<li>[${escapeHtml(e.time)}] ${escapeHtml(e.msg)}</li>`).join("")
-      : '<li class="muted">暂无</li>';
+    overviewData = await bridge.apiGet("state");
+    renderOverview();
   } catch (error) {
     toast("读取总览失败：" + error.message, false);
   }
 }
 
-/* ---------------- 配置 ---------------- */
+function renderOverview() {
+  const bots = (overviewData || {}).bots || [];
+  const bar = ['<button class="subtab active" data-t="default">默认</button>']
+    .concat(bots.map((b, i) =>
+      `<button class="subtab" data-t="${i}">${escapeHtml(b.name || ("Bot " + (i + 1)))}</button>`))
+    .join("");
+  $("#overview-subtabs").innerHTML = bar;
+  $("#overview-subtabs").querySelectorAll(".subtab").forEach((btn) => {
+    btn.onclick = () => {
+      $("#overview-subtabs").querySelectorAll(".subtab").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      renderOverviewBody(btn.dataset.t);
+    };
+  });
+  renderOverviewBody("default");
+}
+
+function renderOverviewBody(tab) {
+  const data = overviewData || {};
+  const bots = data.bots || [];
+  const isDefault = tab === "default";
+  const bot = isDefault ? null : (bots[Number(tab)] || {});
+  const f = isDefault ? (data.features || {}) : (bot.features || {});
+  const cards = [
+    ["当前视图", isDefault ? "默认配置（全局）" : escapeHtml(bot.name || "")],
+    ["总开关", badge(data.enabled)],
+    ["图片增强", badge(f.image)],
+    ["音频理解", badge(f.audio)],
+    ["视频理解", badge(f.video)],
+    ["分析中提示", badge(f.notice)],
+    ["图片转述注入", data.caption_patch_installed ? "已安装" : "未安装"],
+    ["图转文模型", escapeHtml(data.caption_provider || "（未配置）")],
+    ["语音转文本", data.stt_configured ? "已配置" : "（未配置）"],
+    ["音频深度分析", data.librosa ? "librosa 可用" : "轻量模式（未装 librosa）"],
+    ["进行中的解析", String((data.pipeline || {}).active_tasks ?? 0)],
+    ["版本", escapeHtml(data.version || "-")],
+  ];
+  if (!isDefault) {
+    cards.push(["匹配目标", escapeHtml((bot.targets || []).join("、") || "（未设置）")]);
+    cards.push(["覆写项数量", String(Object.keys(bot.overrides || {}).length)]);
+  }
+  $("#overview-cards").innerHTML = cards
+    .map(([k, v]) => `<div class="card"><div class="k">${escapeHtml(k)}</div><div class="v">${v}</div></div>`)
+    .join("");
+
+  const box = $("#overview-overrides");
+  if (isDefault) {
+    box.innerHTML = '<li class="muted">默认视图无覆写项（每个 Bot 页可见其覆写清单）。</li>';
+  } else {
+    const ov = bot.overrides || {};
+    const keys = Object.keys(ov);
+    box.innerHTML = keys.length
+      ? keys.map((k) => `<li><code>${escapeHtml(k)}</code> = ${escapeHtml(JSON.stringify(ov[k]))}</li>`).join("")
+      : '<li class="muted">未覆写任何项（全部跟随默认配置）。</li>';
+  }
+
+  const errors = data.recent_errors || [];
+  $("#overview-errors").innerHTML = errors.length
+    ? errors.map((e) => `<li>[${escapeHtml(e.time)}] ${escapeHtml(e.msg)}</li>`).join("")
+    : '<li class="muted">暂无</li>';
+}
+
+/* ---------------- 配置（默认 + Bot 分页） ---------------- */
 async function loadConfig() {
   try {
     const [cfg, prov] = await Promise.all([
@@ -83,42 +126,51 @@ async function loadConfig() {
       bridge.apiGet("providers"),
     ]);
     configMeta = cfg.meta || [];
-    currentConfig = cfg.config || {};
+    globalConfig = cfg.config || {};
+    botsList = cfg.bots || [];
     providerOptions = prov.providers || [];
-    renderConfigForm();
+    if (workspace.configTab !== "default" &&
+        Number(workspace.configTab) >= botsList.length) {
+      workspace.configTab = "default";
+    }
+    renderConfigPage();
   } catch (error) {
     toast("读取配置失败：" + error.message, false);
   }
 }
 
-function renderConfigForm() {
-  const groups = new Map();
-  for (const item of configMeta) {
-    if (!groups.has(item.group)) groups.set(item.group, []);
-    groups.get(item.group).push(item);
-  }
-  const html = [];
-  for (const [group, items] of groups) {
-    html.push(`<div class="field-group-title">${escapeHtml(group)}</div>`);
-    for (const item of items) html.push(renderField(item));
-  }
-  $("#config-form").innerHTML = html.join("");
-  $("#save-config").onclick = saveConfig;
+function renderConfigPage() {
+  const bar = ['<button class="subtab' + (workspace.configTab === "default" ? " active" : "") + '" data-t="default">默认配置</button>']
+    .concat(botsList.map((b, i) =>
+      `<button class="subtab${workspace.configTab === String(i) ? " active" : ""}" data-t="${i}">${escapeHtml(b.name || ("Bot " + (i + 1)))}</button>`))
+    .concat(['<button class="subtab add" id="btn-add-bot">＋新增 Bot</button>'])
+    .join("");
+  $("#config-subtabs").innerHTML = bar;
+  $("#config-subtabs").querySelectorAll(".subtab[data-t]").forEach((btn) => {
+    btn.onclick = () => {
+      workspace.configTab = btn.dataset.t;
+      workspace.botDraft = null;
+      renderConfigPage();
+    };
+  });
+  $("#btn-add-bot").onclick = addBot;
+  $("#save-config").onclick = () => {
+    if (workspace.configTab === "default") saveGlobalConfig();
+    else saveBotConfig();
+  };
   $("#reload-config").onclick = loadConfig;
+
+  if (workspace.configTab === "default") renderGlobalForm();
+  else renderBotForm(Number(workspace.configTab));
 }
 
-function renderField(item) {
-  const value = currentConfig[item.key];
-  const id = "cfg-" + item.key;
-  const hint = item.hint ? `<div class="fhint">${escapeHtml(item.hint)}</div>` : "";
-  const label = `<label for="${id}">${escapeHtml(item.label)}</label>`;
+function controlHtml(item, value, disabled, id) {
+  const dis = disabled ? " disabled" : "";
   if (item.type === "bool") {
-    return `<div class="field" data-key="${item.key}" data-type="bool">${label}${hint}
-      <div class="row"><input type="checkbox" id="${id}" ${value ? "checked" : ""}/></div></div>`;
+    return `<div class="row"><input type="checkbox" id="${id}" ${value ? "checked" : ""}${dis}/></div>`;
   }
   if (item.type === "int") {
-    return `<div class="field" data-key="${item.key}" data-type="int">${label}${hint}
-      <input type="number" id="${id}" value="${Number(value ?? 0)}"/></div>`;
+    return `<input type="number" id="${id}" value="${Number(value ?? 0)}"${dis}/>`;
   }
   if (item.type === "select" || item.type === "provider") {
     let options;
@@ -131,50 +183,191 @@ function renderField(item) {
     const opts = options
       .map((o) => `<option value="${escapeHtml(o.value)}" ${String(value ?? "") === String(o.value) ? "selected" : ""}>${escapeHtml(o.label)}</option>`)
       .join("");
-    return `<div class="field" data-key="${item.key}" data-type="string">${label}${hint}
-      <select id="${id}">${opts}</select></div>`;
+    return `<select id="${id}"${dis}>${opts}</select>`;
   }
   if (item.type === "textarea" || item.type === "json") {
     const isJson = item.type === "json";
     const text = isJson ? JSON.stringify(value ?? [], null, 2) : String(value ?? "");
-    return `<div class="field" data-key="${item.key}" data-type="${isJson ? "json" : "string"}">${label}${hint}
-      <textarea id="${id}">${escapeHtml(text)}</textarea></div>`;
+    return `<textarea id="${id}"${dis}>${escapeHtml(text)}</textarea>`;
   }
-  return `<div class="field" data-key="${item.key}" data-type="string">${label}${hint}
-    <input type="text" id="${id}" value="${escapeHtml(String(value ?? ""))}"/></div>`;
+  return `<input type="text" id="${id}" value="${escapeHtml(String(value ?? ""))}"${dis}/>`;
 }
 
-async function saveConfig() {
+function renderGlobalForm() {
+  const groups = new Map();
+  for (const item of configMeta) {
+    if (!groups.has(item.group)) groups.set(item.group, []);
+    groups.get(item.group).push(item);
+  }
+  const html = [];
+  for (const [group, items] of groups) {
+    html.push(`<div class="field-group-title">${escapeHtml(group)}</div>`);
+    for (const item of items) {
+      const id = "gf-" + item.key;
+      const hint = item.hint ? `<div class="fhint">${escapeHtml(item.hint)}</div>` : "";
+      html.push(
+        `<div class="field" data-key="${item.key}" data-type="${item.type}">
+          <label for="${id}">${escapeHtml(item.label)}</label>${hint}
+          ${controlHtml(item, globalConfig[item.key], false, id)}
+        </div>`);
+    }
+  }
+  $("#config-body").innerHTML = html.join("");
+}
+
+async function saveGlobalConfig() {
   const patch = {};
-  const fields = Array.from(document.querySelectorAll("#config-form .field"));
+  const fields = Array.from(document.querySelectorAll("#config-body .field"));
   for (const field of fields) {
     const key = field.dataset.key;
     const type = field.dataset.type;
-    if (type === "bool") {
-      patch[key] = field.querySelector("input[type=checkbox]").checked;
+    let control = field.querySelector("input,select,textarea");
+    if (!control) continue;
+    if (type === "bool" || control.type === "checkbox") {
+      patch[key] = control.checked;
     } else if (type === "int") {
-      patch[key] = parseInt(field.querySelector("input").value || "0", 10) || 0;
-    } else if (type === "json") {
-      const raw = (field.querySelector("textarea").value || "").trim() || "[]";
-      try {
-        const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) throw new Error("需要 JSON 列表");
-        patch[key] = parsed;
-      } catch (error) {
-        toast(`「${key}」JSON 无效：${error.message}`, false);
-        return;
-      }
+      patch[key] = parseInt(control.value || "0", 10) || 0;
     } else {
-      const el = field.querySelector("input,select,textarea");
-      patch[key] = el ? el.value : "";
+      patch[key] = control.value;
     }
   }
   try {
     const res = await bridge.apiPost("config", { patch });
-    currentConfig = res.config || currentConfig;
-    toast(res.saved ? "配置已保存并同步" : "配置已更新（落盘失败，仅本次生效）", !!res.saved);
+    toast(res.saved ? "默认配置已保存并同步" : "配置已更新（落盘失败，仅本次生效）", !!res.saved);
+    await loadConfig();
   } catch (error) {
     toast("保存失败：" + error.message, false);
+  }
+}
+
+function renderBotForm(index) {
+  const bot = botsList[index];
+  if (!bot) { workspace.configTab = "default"; renderConfigPage(); return; }
+  if (!workspace.botDraft || workspace.botDraft.index !== index) {
+    workspace.botDraft = {
+      index,
+      name: bot.name || "",
+      targets: (bot.targets || []).join(", "),
+      overrides: JSON.parse(JSON.stringify(bot.overrides || {})),
+    };
+  }
+  const draft = workspace.botDraft;
+  const header = `
+    <div class="bot-header">
+      <div class="field"><label for="bot-name">备注名</label>
+        <input type="text" id="bot-name" value="${escapeHtml(draft.name)}" placeholder="例如：主账号"/></div>
+      <div class="field"><label for="bot-targets">匹配目标（平台实例 ID / QQ号，逗号分隔）</label>
+        <input type="text" id="bot-targets" value="${escapeHtml(draft.targets)}" placeholder="例如：snowluma, 1234567890"/></div>
+    </div>
+    <div class="btn-row" style="margin-bottom:12px">
+      <button class="btn danger" id="bot-delete" type="button">删除此 Bot 配置</button>
+    </div>`;
+  const html = [header];
+  for (const item of configMeta) {
+    if (item.scope === "system") continue;
+    const key = item.key;
+    const overridden = Object.prototype.hasOwnProperty.call(draft.overrides, key);
+    const value = overridden ? draft.overrides[key] : globalConfig[key];
+    const id = "bf-" + key;
+    const hint = item.hint ? `<div class="fhint">${escapeHtml(item.hint)}</div>` : "";
+    html.push(
+      `<div class="field" data-key="${key}" data-type="${item.type}" data-overridden="${overridden ? "1" : "0"}">
+        <label for="${id}">${escapeHtml(item.label)}
+          <span class="src">${overridden ? "已覆写" : "跟随默认"}</span>
+          <button class="btn tiny" type="button" data-act="toggle" data-key="${key}">${overridden ? "恢复默认" : "覆写此值"}</button>
+        </label>${hint}
+        ${controlHtml(item, value, !overridden, id)}
+      </div>`);
+  }
+  $("#config-body").innerHTML = html.join("");
+  document.querySelectorAll('#config-body [data-act="toggle"]').forEach((btn) => {
+    btn.onclick = () => toggleBotKey(btn.dataset.key);
+  });
+  const del = $("#bot-delete");
+  if (del) del.onclick = deleteBot;
+}
+
+function collectBotHeader() {
+  if (!workspace.botDraft) return;
+  const nameEl = $("#bot-name");
+  const targetEl = $("#bot-targets");
+  if (nameEl) workspace.botDraft.name = nameEl.value;
+  if (targetEl) workspace.botDraft.targets = targetEl.value;
+}
+
+function toggleBotKey(key) {
+  collectBotHeader();
+  const draft = workspace.botDraft;
+  if (Object.prototype.hasOwnProperty.call(draft.overrides, key)) {
+    delete draft.overrides[key];
+  } else {
+    draft.overrides[key] = globalConfig[key];
+  }
+  renderBotForm(draft.index);
+}
+
+async function saveBotConfig() {
+  collectBotHeader();
+  const draft = workspace.botDraft;
+  const overrides = {};
+  const fields = Array.from(document.querySelectorAll("#config-body .field"));
+  for (const field of fields) {
+    if (field.dataset.overridden !== "1") continue;
+    const key = field.dataset.key;
+    const type = field.dataset.type;
+    const control = field.querySelector("input,select,textarea");
+    if (!control) continue;
+    if (type === "bool" || control.type === "checkbox") {
+      overrides[key] = control.checked;
+    } else if (type === "int") {
+      overrides[key] = parseInt(control.value || "0", 10) || 0;
+    } else {
+      overrides[key] = control.value;
+    }
+  }
+  const targets = String(draft.targets || "")
+    .split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+  try {
+    const res = await bridge.apiPost("bots/save", {
+      index: draft.index,
+      name: draft.name,
+      bots: targets,
+      overrides,
+    });
+    toast(res.saved ? "Bot 配置已保存并同步" : "已更新（落盘失败，仅本次生效）", !!res.saved);
+    workspace.botDraft = null;
+    await loadConfig();
+    workspace.configTab = String(draft.index);
+    renderConfigPage();
+  } catch (error) {
+    toast("保存失败：" + error.message, false);
+  }
+}
+
+async function addBot() {
+  try {
+    const res = await bridge.apiPost("bots/add", { name: "新Bot", bots: [] });
+    await loadConfig();
+    workspace.configTab = String(res.index ?? Math.max(0, botsList.length - 1));
+    workspace.botDraft = null;
+    renderConfigPage();
+    toast("已新增 Bot 配置，请填写备注名与匹配目标");
+  } catch (error) {
+    toast("新增失败：" + error.message, false);
+  }
+}
+
+async function deleteBot() {
+  const name = (workspace.botDraft && workspace.botDraft.name) || "该 Bot";
+  if (!window.confirm(`确认删除「${name}」的覆写配置？`)) return;
+  try {
+    await bridge.apiPost("bots/delete", { index: workspace.botDraft.index });
+    workspace.botDraft = null;
+    workspace.configTab = "default";
+    await loadConfig();
+    toast("已删除");
+  } catch (error) {
+    toast("删除失败：" + error.message, false);
   }
 }
 
@@ -186,7 +379,6 @@ function formatLogs(entries) {
 async function loadLogs() {
   try {
     const data = await bridge.apiGet("logs", { n: 400 });
-    lastSeq = data.last_seq || 0;
     const view = $("#log-view");
     view.textContent = (data.logs || []).length ? formatLogs(data.logs) : "（暂无日志）";
     view.scrollTop = view.scrollHeight;
@@ -242,11 +434,13 @@ function renderEnv(data) {
     ["Python: soundfile", mods.soundfile],
   ];
   const html = [
-    envRow("ffmpeg", !!(data.ffmpeg || {}).ok, ((data.ffmpeg || {}).path || "") + " · " + ((data.ffmpeg || {}).version || "")),
+    envRow("ffmpeg", !!(data.ffmpeg || {}).ok,
+      ((data.ffmpeg || {}).path || "") + " · " + ((data.ffmpeg || {}).version || "")),
     envRow("ffprobe", !!(data.ffprobe || {}).ok, ((data.ffprobe || {}).path || "")),
     envRow("yt-dlp（B站解析）", !!(data.ytdlp || {}).ok, ((data.ytdlp || {}).version || "")),
     ...moduleRows.map(([label, ok]) => envRow(label, !!ok, ok ? "已安装" : "")),
-    envRow("磁盘剩余 / 工作目录", true, `${(data.disk || {}).free_human || "?"} / ${(data.disk || {}).total_human || "?"} · ${data.workdir || ""}`),
+    envRow("磁盘剩余 / 工作目录", true,
+      `${(data.disk || {}).free_human || "?"} / ${(data.disk || {}).total_human || "?"} · ${data.workdir || ""}`),
   ];
   $("#env-status").innerHTML = html.join("");
 }
@@ -325,8 +519,7 @@ $("#env-clean").onclick = async () => {
     toast("清理失败：" + error.message, false);
   }
 };
-$("#install-optional").onclick = () => startInstall(["librosa", "scipy", "soundfile"]);
-$("#install-numpy").onclick = () => startInstall(["numpy"]);
+$("#install-all").onclick = () => startInstall(["numpy", "librosa", "scipy", "soundfile"]);
 
 /* ---------------- 初始化 ---------------- */
 (async function init() {

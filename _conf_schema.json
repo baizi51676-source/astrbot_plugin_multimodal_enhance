@@ -160,7 +160,7 @@
   },
   "bots": {
     "description": "多 bot 覆写",
-    "hint": "为单个/部分 bot 单独覆写功能开关（未匹配任何规则的 bot 使用上方全局配置）。bot 填「平台实例 ID」或「QQ号」。",
+    "hint": "为单个 bot 维护详细覆写（在插件页面「配置」中按分页可视化编辑）。bot 填「平台实例 ID」或「QQ号」；未匹配任何规则的 bot 使用全局配置。",
     "type": "template_list",
     "default": [],
     "templates": {
@@ -182,25 +182,11 @@
             },
             "default": []
           },
-          "enable_image": {
-            "description": "图片理解增强",
-            "type": "bool",
-            "default": true
-          },
-          "enable_audio": {
-            "description": "音频理解",
-            "type": "bool",
-            "default": true
-          },
-          "enable_video": {
-            "description": "视频理解",
-            "type": "bool",
-            "default": false
-          },
-          "enable_notice": {
-            "description": "分析中提示",
-            "type": "bool",
-            "default": true
+          "overrides": {
+            "description": "覆写项（JSON，由插件页面维护）",
+            "hint": "由插件页面「配置 → Bot 分页」可视化编辑；也可手动填写 JSON 字符串，例如 {\"video_frames\": 4}。留空表示全部跟随默认。",
+            "type": "string",
+            "default": ""
           }
         }
       }

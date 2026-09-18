@@ -1,11 +1,14 @@
-"""配置读取与 bot 级别覆写解析。
+"""配置读取与 per-bot 覆写解析（v2：overrides 模型）。
 
-配置来源于 AstrBot 的插件配置（AstrBotConfig，本质为 dict）。
-本模块不依赖任何 AstrBot 运行时对象，便于单元测试。
+- 全局配置：所有键（含系统级 env_/log_）；
+- 每个 bot 规则：{name, bots, overrides}，overrides 可为 JSON 字符串或 dict，
+  仅覆盖被显式设置的键，其余沿用全局配置；
+- 兼容旧版 enable_image/enable_audio/enable_video/enable_notice 字段。
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 DEFAULT_IMAGE_PROMPT = (
@@ -16,7 +19,6 @@ DEFAULT_IMAGE_PROMPT = (
 
 DEFAULT_ENV_PIP_INDEX = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
-# 兜底默认值（与 _conf_schema.json 保持一致）
 DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "notice_enabled": True,
@@ -47,13 +49,15 @@ DEFAULTS: dict[str, Any] = {
     "bots": [],
 }
 
-# per-bot 覆写字段映射：全局配置键 -> 规则项键
-_OVERRIDE_KEYS = {
+# per-bot 覆写字段映射：全局配置键 -> 旧版规则项键（兼容读取）
+_LEGACY_KEYS = {
     "image_enabled": "enable_image",
     "audio_enabled": "enable_audio",
     "video_enabled": "enable_video",
     "notice_enabled": "enable_notice",
 }
+
+_FEATURE_KEYS = ("image_enabled", "audio_enabled", "video_enabled", "notice_enabled")
 
 
 def _to_bool(value: Any, default: bool) -> bool:
@@ -82,7 +86,7 @@ def _to_str(value: Any, default: str) -> str:
 
 
 class PluginConfig:
-    """插件配置的只读视图（含多 bot 匹配）。"""
+    """插件配置的只读视图（含多 bot 覆写解析）。"""
 
     def __init__(self, raw: dict[str, Any] | None):
         self.raw: dict[str, Any] = dict(raw or {})
@@ -107,7 +111,7 @@ class PluginConfig:
     def is_globally_enabled(self) -> bool:
         return self.bool("enabled", True)
 
-    # ---------- 多 bot 规则 ----------
+    # ---------- bot 规则 ----------
 
     def _iter_bot_rules(self):
         bots = self.raw.get("bots")
@@ -116,16 +120,49 @@ class PluginConfig:
                 if isinstance(item, dict):
                     yield item
         elif isinstance(bots, dict):
-            # 兼容 {"rule": [ ... ]} 形态
             for group in bots.values():
                 if isinstance(group, list):
                     for item in group:
                         if isinstance(item, dict):
                             yield item
 
+    @staticmethod
+    def _overrides_of(rule: dict[str, Any] | None) -> dict[str, Any]:
+        """解析规则中的覆写字典（兼容 JSON 字符串 / dict / 旧版 enable_* 字段）。"""
+        if not rule:
+            return {}
+        raw = rule.get("overrides")
+        overrides: dict[str, Any] = {}
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    overrides = dict(parsed)
+            except (ValueError, TypeError):
+                overrides = {}
+        elif isinstance(raw, dict):
+            overrides = dict(raw)
+        for dst_key, legacy_key in _LEGACY_KEYS.items():
+            if legacy_key in rule and dst_key not in overrides:
+                overrides[dst_key] = rule[legacy_key]
+        return overrides
+
+    def iter_bots(self) -> list[dict[str, Any]]:
+        """列出所有 bot 规则（供页面分页展示）。"""
+        result: list[dict[str, Any]] = []
+        for index, rule in enumerate(self._iter_bot_rules()):
+            targets = [str(t).strip() for t in (rule.get("bots") or []) if str(t).strip()]
+            result.append({
+                "index": index,
+                "name": str(rule.get("name") or ""),
+                "targets": targets,
+                "overrides": self._overrides_of(rule),
+            })
+        return result
+
     def match_bot_rule(self, platform_id: str = "", self_id: str = "",
                        umo: str | None = None) -> dict[str, Any] | None:
-        """按 平台实例 ID / QQ 号 / UMO 匹配第一条 bot 覆写规则。"""
+        """按 平台实例 ID / QQ 号 / UMO 匹配第一条 bot 规则。"""
         candidates = {str(platform_id or ""), str(self_id or "")}
         if umo:
             candidates.add(str(umo))
@@ -140,15 +177,27 @@ class PluginConfig:
                 return rule
         return None
 
+    # ---------- 生效配置 ----------
+
+    def effective_with_overrides(self, overrides: dict[str, Any] | None) -> dict[str, Any]:
+        """全局默认值 + 覆写项 = 生效配置。"""
+        effective = {key: self.get(key) for key in DEFAULTS.keys()}
+        if overrides:
+            for key, value in overrides.items():
+                if key in DEFAULTS:
+                    effective[key] = value
+        return effective
+
+    def effective_config_for(self, platform_id: str = "", self_id: str = "",
+                             umo: str | None = None) -> dict[str, Any]:
+        rule = self.match_bot_rule(platform_id, self_id, umo)
+        return self.effective_with_overrides(self._overrides_of(rule))
+
     def resolve_feature_flags(self, platform_id: str = "", self_id: str = "",
                               umo: str | None = None) -> dict[str, bool]:
-        """解析某个 bot 的最终功能开关（全局默认 + 规则覆写）。"""
-        flags: dict[str, bool] = {}
-        for cfg_key in _OVERRIDE_KEYS:
-            flags[cfg_key] = _to_bool(self.get(cfg_key), bool(DEFAULTS.get(cfg_key, False)))
-        rule = self.match_bot_rule(platform_id, self_id, umo)
-        if rule:
-            for cfg_key, rule_key in _OVERRIDE_KEYS.items():
-                if rule_key in rule and rule[rule_key] is not None:
-                    flags[cfg_key] = _to_bool(rule[rule_key], flags[cfg_key])
-        return flags
+        """某 bot 的最终功能开关（全局默认 + 覆写）。"""
+        effective = self.effective_config_for(platform_id, self_id, umo)
+        return {
+            key: _to_bool(effective.get(key), bool(DEFAULTS.get(key, False)))
+            for key in _FEATURE_KEYS
+        }

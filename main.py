@@ -38,7 +38,7 @@ except Exception:  # pragma: no cover - 旧版 AstrBot 无插件页面 API
     _WEB_AVAILABLE = False
 
 PLUGIN_NAME = "astrbot_plugin_multimodal_enhance"
-PLUGIN_VERSION = "v0.1.0"
+PLUGIN_VERSION = "v0.1.1"
 
 # 插件页面配置表（也用于保存时的类型校验）
 _CONFIG_META = [
@@ -90,9 +90,12 @@ _CONFIG_META = [
     {"key": "env_keep_temp", "group": "环境", "label": "保留临时文件", "type": "bool"},
     {"key": "log_enabled", "group": "日志", "label": "记录插件日志", "type": "bool"},
     {"key": "log_max_lines", "group": "日志", "label": "日志缓冲行数", "type": "int"},
-    {"key": "bots", "group": "多bot覆写", "label": "Bot 覆写（JSON 列表）", "type": "json",
-     "hint": "为单个/部分 bot 覆写功能开关；未匹配的 bot 使用全局配置。"},
 ]
+# 系统级配置项（仅全局页展示，不参与 bot 覆写）
+for _item in _CONFIG_META:
+    if _item["key"].startswith(("env_", "log_")):
+        _item["scope"] = "system"
+
 _TYPE_BY_KEY = {item["key"]: item["type"] for item in _CONFIG_META}
 
 
@@ -219,6 +222,9 @@ class Main(Star):
             ("state", "GET", self._api_state, "总览状态"),
             ("config", "GET", self._api_config_get, "读取配置"),
             ("config", "POST", self._api_config_save, "保存配置"),
+            ("bots/add", "POST", self._api_bots_add, "新增 Bot 配置"),
+            ("bots/save", "POST", self._api_bots_save, "保存 Bot 配置"),
+            ("bots/delete", "POST", self._api_bots_delete, "删除 Bot 配置"),
             ("providers", "GET", self._api_providers, "可选模型列表"),
             ("logs", "GET", self._api_logs, "读取日志"),
             ("logs/stream", "GET", self._api_logs_stream, "实时日志流"),
@@ -238,13 +244,22 @@ class Main(Star):
     def _public_config(self) -> dict:
         return {item["key"]: self.conf.get(item["key"]) for item in _CONFIG_META}
 
-    def _caption_provider_id(self) -> str:
+    def caption_provider_id(self) -> str:
+        """AstrBot 全局「图片描述」模型 ID（视频帧描述等复用）。"""
         try:
             cfg = self.context.get_config()
             settings = cfg.get("provider_settings", {}) if hasattr(cfg, "get") else {}
             return str(settings.get("default_image_caption_provider_id") or "")
         except Exception:
             return ""
+
+    def effective_settings_for(self, event) -> dict:
+        """按 bot 解析最终生效配置（全局默认 + 覆写）。"""
+        try:
+            return self.conf.effective_config_for(
+                self._platform_id(event), self._self_id(event), self._umo(event))
+        except Exception:
+            return {key: self.conf.get(key) for key in DEFAULTS.keys()}
 
     async def _api_state(self):
         stt_configured = False
@@ -262,7 +277,7 @@ class Main(Star):
                 "video": self.conf.bool("video_enabled", False),
                 "notice": self.conf.bool("notice_enabled", True),
             },
-            "caption_provider": self._caption_provider_id(),
+            "caption_provider": self.caption_provider_id(),
             "stt_configured": stt_configured,
             "numpy": audio_analyzer.has_numpy(),
             "librosa": audio_analyzer.has_librosa(),
@@ -270,11 +285,31 @@ class Main(Star):
             "caption_patch_installed": caption_patch.installed(),
             "pipeline": self.pipeline.stats(),
             "recent_errors": self.log.recent_errors(5),
+            "bots": self._bots_overview(),
         }
         return json_response(state)
 
+    def _bots_overview(self) -> list:
+        result = []
+        for bot in self.conf.iter_bots():
+            effective = self.conf.effective_with_overrides(bot.get("overrides") or {})
+            result.append({
+                "index": bot.get("index"),
+                "name": bot.get("name") or f"Bot {bot.get('index', 0) + 1}",
+                "targets": bot.get("targets") or [],
+                "overrides": bot.get("overrides") or {},
+                "features": {
+                    "image": _to_bool(effective.get("image_enabled"), True),
+                    "audio": _to_bool(effective.get("audio_enabled"), True),
+                    "video": _to_bool(effective.get("video_enabled"), False),
+                    "notice": _to_bool(effective.get("notice_enabled"), True),
+                },
+            })
+        return result
+
     async def _api_config_get(self):
-        return json_response({"config": self._public_config(), "meta": _CONFIG_META})
+        return json_response({"config": self._public_config(), "meta": _CONFIG_META,
+                              "bots": self._bots_overview()})
 
     async def _api_config_save(self):
         payload = await request.json(default={})
@@ -390,6 +425,84 @@ class Main(Star):
         return file_response(export_path, filename=f"multimodal_enhance_logs_{stamp}.txt",
                              content_type="text/plain; charset=utf-8")
 
+    # ---------------- Bot 配置管理 ----------------
+
+    def _bots_rules(self) -> list:
+        rules = self.config.get("bots") if hasattr(self.config, "get") else None
+        return rules if isinstance(rules, list) else []
+
+    async def _persist_config(self) -> bool:
+        saved = False
+        try:
+            saver = getattr(self.config, "save_config_async", None)
+            if callable(saver):
+                await saver()
+                saved = True
+            else:
+                self.config.save_config()
+                saved = True
+        except Exception as exc:
+            self.log.warn(f"配置保存失败：{exc}")
+        self.conf = PluginConfig(dict(self.config))
+        self.log.configure(
+            self.conf.bool("log_enabled", True),
+            os.path.join(self.data_dir, "logs", "plugin.log"),
+            self.conf.int("log_max_lines", 2000),
+        )
+        return saved
+
+    async def _api_bots_add(self):
+        payload = await request.json(default={})
+        name = str(payload.get("name") or "新Bot")
+        targets = [str(t).strip() for t in (payload.get("bots") or []) if str(t).strip()]
+        rules = self._bots_rules()
+        rules.append({"name": name, "bots": targets, "overrides": "{}"})
+        self.config["bots"] = rules
+        saved = await self._persist_config()
+        self.log.info(f"已新增 Bot 配置：{name}")
+        return json_response({"saved": saved, "index": len(rules) - 1})
+
+    async def _api_bots_save(self):
+        payload = await request.json(default={})
+        try:
+            index = int(payload.get("index"))
+        except (TypeError, ValueError):
+            return error_response("index 无效", status_code=400)
+        rules = self._bots_rules()
+        if index < 0 or index >= len(rules):
+            return error_response("index 越界", status_code=400)
+        overrides = payload.get("overrides")
+        cleaned_ov = {}
+        if isinstance(overrides, dict):
+            for key, value in overrides.items():
+                if key in DEFAULTS:
+                    cleaned_ov[key] = value
+        rule = rules[index]
+        rule["name"] = str(payload.get("name") or rule.get("name") or "")
+        rule["bots"] = [str(t).strip() for t in (payload.get("bots") or []) if str(t).strip()]
+        rule["overrides"] = json.dumps(cleaned_ov, ensure_ascii=False)
+        for legacy in ("enable_image", "enable_audio", "enable_video", "enable_notice"):
+            rule.pop(legacy, None)
+        self.config["bots"] = rules
+        saved = await self._persist_config()
+        self.log.info(f"已保存 Bot 配置：{rule['name']}（覆写 {len(cleaned_ov)} 项）")
+        return json_response({"saved": saved})
+
+    async def _api_bots_delete(self):
+        payload = await request.json(default={})
+        try:
+            index = int(payload.get("index"))
+        except (TypeError, ValueError):
+            return error_response("index 无效", status_code=400)
+        rules = self._bots_rules()
+        if index < 0 or index >= len(rules):
+            return error_response("index 越界", status_code=400)
+        removed = rules.pop(index)
+        self.config["bots"] = rules
+        saved = await self._persist_config()
+        self.log.info(f"已删除 Bot 配置：{removed.get('name')}")
+        return json_response({"saved": saved})
+
     async def _api_env_check(self):
         data = await env_manager.check_environment(self.conf, self.data_dir)
         data["disk"]["free_human"] = env_manager.format_bytes(data["disk"].get("free"))
@@ -400,7 +513,7 @@ class Main(Star):
         payload = await request.json(default={})
         packages = payload.get("packages") if isinstance(payload, dict) else None
         if not isinstance(packages, list) or not packages:
-            packages = list(env_manager.OPTIONAL_PACKAGES)
+            packages = list(env_manager.ALL_PACKAGES)
         index = self.conf.str("env_pip_index")
         ok, message = env_manager.start_install([str(p) for p in packages], index)
         return json_response({"started": ok, "message": message})
