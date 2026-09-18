@@ -18,6 +18,7 @@ class PluginLogger:
         self._subs: list[asyncio.Queue] = []
         self._enabled = True
         self._file_path: str | None = None
+        self._seq = 0
 
     # ---------- 配置 ----------
 
@@ -42,7 +43,9 @@ class PluginLogger:
     # ---------- 写入 ----------
 
     def _append(self, level: str, msg: str) -> dict[str, Any]:
+        self._seq += 1
         entry = {
+            "seq": self._seq,
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "level": level,
             "msg": str(msg),

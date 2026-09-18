@@ -150,3 +150,7 @@ def uninstall(plugin: Any | None = None) -> None:
             plugin.log.info("图片增强：已卸载转述注入补丁。")
         except Exception:
             pass
+
+
+def installed() -> bool:
+    return _installed

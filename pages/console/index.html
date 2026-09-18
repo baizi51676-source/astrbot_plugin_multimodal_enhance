@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>多模态理解增强控制台</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="title-wrap">
+      <h1>多模态理解增强</h1>
+      <span class="subtitle">图片 / 音频 / 视频 · 控制台</span>
+    </div>
+    <div class="status" id="status-line">加载中…</div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="overview">总览</button>
+    <button class="tab-btn" data-tab="config">配置</button>
+    <button class="tab-btn" data-tab="logs">插件日志</button>
+    <button class="tab-btn" data-tab="env">环境配置</button>
+  </nav>
+
+  <main>
+    <section class="tab-panel active" id="panel-overview">
+      <div class="cards" id="overview-cards"></div>
+      <div class="block">
+        <div class="block-head">
+          <h2>最近错误日志</h2>
+          <button class="btn small" id="refresh-overview">刷新</button>
+        </div>
+        <ul class="error-list" id="overview-errors"><li class="muted">暂无</li></ul>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="panel-config">
+      <div class="block">
+        <div class="block-head">
+          <h2>配置</h2>
+          <div class="btn-row">
+            <button class="btn" id="reload-config">重新读取</button>
+            <button class="btn primary" id="save-config">保存配置</button>
+          </div>
+        </div>
+        <p class="muted small">提示：这里的修改与 AstrBot 插件配置（同一份配置文件）双向同步。</p>
+        <div id="config-form"></div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="panel-logs">
+      <div class="block">
+        <div class="block-head">
+          <h2>插件日志</h2>
+          <div class="btn-row">
+            <button class="btn small" id="logs-refresh">刷新</button>
+            <button class="btn small" id="logs-stream-toggle">开启实时流</button>
+            <button class="btn small" id="logs-export">导出日志</button>
+          </div>
+        </div>
+        <pre class="log-view" id="log-view">（加载中……）</pre>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="panel-env">
+      <div class="block">
+        <div class="block-head">
+          <h2>环境检测</h2>
+          <div class="btn-row">
+            <button class="btn small" id="env-refresh">重新检测</button>
+            <button class="btn small" id="env-clean">清理临时文件</button>
+          </div>
+        </div>
+        <div id="env-status" class="env-grid"></div>
+      </div>
+      <div class="block">
+        <div class="block-head">
+          <h2>可选依赖安装（音频深度分析）</h2>
+          <div class="btn-row">
+            <button class="btn" id="install-optional">安装 librosa / scipy / soundfile</button>
+            <button class="btn" id="install-numpy">安装 numpy</button>
+          </div>
+        </div>
+        <p class="muted small">安装通过当前 AstrBot 的 Python 环境执行（pip），使用上方配置的镜像源；安装期间请勿关闭页面。</p>
+        <pre class="install-output" id="install-output">（暂无安装任务）</pre>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
