@@ -25,6 +25,11 @@ from .media import audio_analyzer, ncm, video_analyzer
 from .media.downloader import download_url, pick_video_meta, ytdlp_download, ytdlp_json
 from .media.ffmpeg_tools import decode_pcm, find_tool, probe_media, run_proc, summarize_probe
 
+try:
+    from astrbot.api.event import MessageChain  # type: ignore
+except Exception:  # pragma: no cover
+    MessageChain = None
+
 AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg", ".amr", ".silk", ".opus"}
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".flv"}
 GOOD_STT_EXTS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".opus"}
@@ -228,6 +233,17 @@ class MediaPipeline:
                 self.plugin.log.info(f"消息含未处理组件：{sorted(set(unknown))}")
         return det
 
+    async def _send_proactive(self, event, text: str) -> None:
+        """主动发送消息（不触碰 event 的 _has_send_oper，避免主流程跳过 LLM 回复）。"""
+        if MessageChain is None:
+            self.plugin.log.warn("分析中提示未发送：缺少 MessageChain。")
+            return
+        try:
+            chain = MessageChain().message(text)
+            await self.plugin.context.send_message(self._umo(event), chain)
+        except Exception as exc:
+            self.plugin.log.warn(f"分析中提示发送失败：{exc}")
+
     def stats(self) -> dict:
         active = sum(1 for t in self._tasks.values() if not t.done())
         return {"active_tasks": active, "pending_results": len(self._results)}
@@ -259,7 +275,9 @@ class MediaPipeline:
                         self.plugin.context, self._umo(event),
                         _sget_str(settings, "notice_provider", ""),
                     )
-                    await event.send(event.plain_result(notice))
+                    # 重要：不能用 event.send()——它会把 _has_send_oper 置 True，
+                    # 导致 AstrBot 的 process_stage 判定「已有发送操作」而跳过 LLM 回复。
+                    await self._send_proactive(event, notice)
                 except Exception:
                     pass
             self.plugin.log.info(f"检测到媒体内容，开始解析：{key}")
@@ -711,7 +729,9 @@ class MediaPipeline:
         task = self._tasks.get(key)
         if task and not task.done():
             try:
-                await asyncio.shield(task)
+                await asyncio.wait_for(asyncio.shield(task), timeout=240)
+            except asyncio.TimeoutError:
+                self.plugin.log.warn("解析等待超时（240s），先继续对话；解析仍在后台进行。")
             except Exception:
                 pass
 

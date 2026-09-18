@@ -128,6 +128,10 @@ def test_env_manager() -> None:
     conf2 = PluginConfig({"env_work_dir": "/data/w"})
     check("workdir 自定义", resolve_work_dir(conf2, "/tmp/x") == "/data/w")
     check("一键安装包列表", ALL_PACKAGES == ["numpy", "librosa", "scipy", "soundfile"])
+    from core.env_manager import ONE_CLICK_LABELS
+    check("一键配置包含 ffmpeg 与 yt-dlp",
+          len(ONE_CLICK_LABELS) == 3 and "ffmpeg" in ONE_CLICK_LABELS[0]
+          and "yt-dlp" in ONE_CLICK_LABELS[2])
 
 
 # ---------------- 管线检测（含引用消息） ----------------

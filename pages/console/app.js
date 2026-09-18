@@ -519,7 +519,17 @@ $("#env-clean").onclick = async () => {
     toast("清理失败：" + error.message, false);
   }
 };
-$("#install-all").onclick = () => startInstall(["numpy", "librosa", "scipy", "soundfile"]);
+async function startOneClick() {
+  try {
+    const res = await bridge.apiPost("env/install", { mode: "one_click" });
+    toast(res.message || "一键配置已启动");
+    startInstallPolling();
+  } catch (error) {
+    toast("启动失败：" + error.message, false);
+  }
+}
+
+$("#install-all").onclick = () => startOneClick();
 
 /* ---------------- 初始化 ---------------- */
 (async function init() {

@@ -14,6 +14,11 @@ from .media.ffmpeg_tools import find_tool, run_proc
 OPTIONAL_PACKAGES = ["librosa", "scipy", "soundfile"]
 BASE_PACKAGES = ["numpy"]
 ALL_PACKAGES = ["numpy", "librosa", "scipy", "soundfile"]
+ONE_CLICK_LABELS = [
+    "系统工具：ffmpeg / ffprobe（apt）",
+    "Python 依赖：numpy / librosa / scipy / soundfile（pip）",
+    "yt-dlp（pip 版本，作为系统版的补充）",
+]
 
 _install_state: dict = {
     "running": False,
@@ -108,6 +113,61 @@ async def _run_install(packages: list[str], index_url: str) -> None:
     rc, out, err = await run_proc(cmd, timeout=1200)
     tail = (out + b"\n" + err).decode("utf-8", "ignore")[-8000:]
     _install_state.update({"running": False, "output": tail, "ok": rc == 0})
+
+
+async def _run_one_click(index_url: str) -> None:
+    _install_state.update({
+        "running": True,
+        "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "packages": list(ONE_CLICK_LABELS),
+        "output": "开始一键配置所有功能依赖……\n",
+        "ok": None,
+    })
+
+    async def run_step(title: str, cmd: list[str], timeout: float) -> int:
+        _install_state["output"] += f"\n=== {title} ===\n"
+        rc, out, err = await run_proc(cmd, timeout=timeout)
+        tail = (out + b"\n" + err).decode("utf-8", "ignore")[-4000:]
+        _install_state["output"] += tail + f"\n[{'完成' if rc == 0 else '失败 rc=' + str(rc)}]\n"
+        return rc
+
+    if shutil.which("apt-get"):
+        rc = await run_step("系统工具：ffmpeg / ffprobe（apt）",
+                            ["env", "DEBIAN_FRONTEND=noninteractive",
+                             "apt-get", "-y", "install", "ffmpeg"], 600)
+        if rc != 0:
+            _install_state["output"] += "（apt 安装未成功；若系统已有 ffmpeg 可忽略此项）\n"
+    else:
+        _install_state["output"] += "\n（未找到 apt-get，跳过系统工具安装）\n"
+
+    pip_cmd = [sys.executable, "-m", "pip", "install", "-U",
+               "numpy", "librosa", "scipy", "soundfile",
+               "--disable-pip-version-check"]
+    if index_url:
+        pip_cmd += ["-i", index_url]
+    rc_pip = await run_step("Python 依赖：numpy / librosa / scipy / soundfile（pip）",
+                            pip_cmd, 1200)
+
+    yt_cmd = [sys.executable, "-m", "pip", "install", "-U", "yt-dlp",
+              "--disable-pip-version-check"]
+    if index_url:
+        yt_cmd += ["-i", index_url]
+    rc_yt = await run_step("yt-dlp（pip 版本）", yt_cmd, 600)
+    if rc_yt != 0:
+        _install_state["output"] += "（yt-dlp pip 安装失败；系统版仍可用）\n"
+
+    _install_state.update({"running": False, "ok": rc_pip == 0})
+
+
+def start_one_click(index_url: str = "") -> tuple[bool, str]:
+    """一键配置所有功能依赖（ffmpeg/ffprobe + Python 依赖 + yt-dlp）。"""
+    if _install_state.get("running"):
+        return False, "已有安装任务进行中"
+    try:
+        asyncio.get_event_loop().create_task(_run_one_click(index_url))
+    except RuntimeError:
+        return False, "无事件循环，无法启动安装"
+    return True, "一键配置已启动"
 
 
 def start_install(packages: list[str], index_url: str = "") -> tuple[bool, str]:

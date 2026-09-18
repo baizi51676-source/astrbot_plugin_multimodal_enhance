@@ -9,10 +9,20 @@ import shutil
 
 
 def find_tool(name: str, configured: str = "") -> str | None:
-    """优先使用配置路径，其次在 PATH 中查找。"""
+    """优先使用配置路径，其次 PATH，最后 AstrBot 虚拟环境 bin 目录。"""
     if configured and os.path.exists(configured):
         return configured
-    return shutil.which(name)
+    found = shutil.which(name)
+    if found:
+        return found
+    try:
+        import sys
+        candidate = os.path.join(os.path.dirname(sys.executable), name)
+        if os.path.exists(candidate):
+            return candidate
+    except Exception:
+        pass
+    return None
 
 
 async def run_proc(cmd: list[str], timeout: float = 120) -> tuple[int, bytes, bytes]:

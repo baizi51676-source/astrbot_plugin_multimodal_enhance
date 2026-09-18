@@ -38,7 +38,7 @@ except Exception:  # pragma: no cover - 旧版 AstrBot 无插件页面 API
     _WEB_AVAILABLE = False
 
 PLUGIN_NAME = "astrbot_plugin_multimodal_enhance"
-PLUGIN_VERSION = "v0.1.1"
+PLUGIN_VERSION = "v0.1.2"
 
 # 插件页面配置表（也用于保存时的类型校验）
 _CONFIG_META = [
@@ -511,11 +511,13 @@ class Main(Star):
 
     async def _api_env_install(self):
         payload = await request.json(default={})
+        mode = payload.get("mode") if isinstance(payload, dict) else None
         packages = payload.get("packages") if isinstance(payload, dict) else None
-        if not isinstance(packages, list) or not packages:
-            packages = list(env_manager.ALL_PACKAGES)
         index = self.conf.str("env_pip_index")
-        ok, message = env_manager.start_install([str(p) for p in packages], index)
+        if mode == "one_click" or not isinstance(packages, list) or not packages:
+            ok, message = env_manager.start_one_click(index)
+        else:
+            ok, message = env_manager.start_install([str(p) for p in packages], index)
         return json_response({"started": ok, "message": message})
 
     async def _api_env_install_status(self):

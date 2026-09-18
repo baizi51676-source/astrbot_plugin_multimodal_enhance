@@ -42,7 +42,7 @@ https://github.com/baizi51676-source/astrbot_plugin_multimodal_enhance
 
 1. 安装插件并重载；
 2. 打开插件页面「配置」，按需开启图片 / 音频 / 视频功能；
-3. 在「环境配置」中可一键安装全部功能依赖（numpy / librosa / scipy / soundfile）；
+3. 在「环境配置」中一键配置全部依赖（ffmpeg/ffprobe、yt-dlp、numpy/librosa/scipy/soundfile）；
 4. 在群里发送图片、语音、音乐链接或视频链接即可。
 
 ## 配置说明
