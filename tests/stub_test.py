@@ -140,6 +140,18 @@ def test_split_wav() -> None:
         check("帧总数一致", total == frames)
 
 
+def test_wake_gate() -> None:
+    print("- 唤醒门控（未 @ 不触发解析）")
+    pipeline = _make_pipeline()
+    ev = _make_event([Video(file="x.mp4")])
+    ev.is_at_or_wake_command = False
+    asyncio.run(pipeline.on_message(ev))
+    plugin = pipeline.plugin
+    check("未唤醒：不创建任务", len(pipeline._tasks) == 0)
+    check("未唤醒：无解析日志",
+          not any("检测到媒体" in e["msg"] for e in plugin.log.tail(30)))
+
+
 # ---------------- 环境管理 ----------------
 
 def test_env_manager() -> None:
@@ -316,6 +328,7 @@ def main() -> None:
     test_pipeline_detect()
     test_resolve_value()
     test_split_wav()
+    test_wake_gate()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     if FAIL:
         sys.exit(1)

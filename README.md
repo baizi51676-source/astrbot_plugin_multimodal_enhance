@@ -1,3 +1,7 @@
+香香可爱捏
+
+![封面](./logo.png)
+
 # 多模态理解增强（astrbot_plugin_multimodal_enhance）
 
 > 让 Bot 真正「看懂」图片、音频与视频。
@@ -88,6 +92,16 @@ https://github.com/baizi51676-source/astrbot_plugin_multimodal_enhance
 - 所有媒体解析在本机进行，不会上传到你未配置的第三方服务；
 - 网络请求仅针对消息中出现的链接（音乐/视频平台）与依赖安装（pip 镜像）；
 - 插件日志可在页面查看并导出，不含敏感凭据信息。
+
+## 致谢
+
+- Kazemata_Neri —— 资金支持
+- 萧影1029（<https://github.com/qyac>）—— 测试环境支持
+- deepseek —— 代码编写支持
+
+## 素材与免责声明
+
+插件封面与界面背景图来源于网络，仅用于学习与交流之目的；如相关权利人认为构成侵权，请联系我们，我们会在第一时间删除相关素材。
 
 ## 许可证
 

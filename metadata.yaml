@@ -8,7 +8,7 @@ desc: >
 help: >
   在插件页面或插件配置中按需开启：图片增强、音频理解、视频理解（均可按 bot 单独覆写）。
   模型跟随 AstrBot 现有配置：图转文使用「图片描述」设置、语音转文本使用「STT」设置；未配置时对应功能自动跳过。
-version: v0.1.4
+version: v0.1.5
 author: baizi51676-source
 repo: https://github.com/baizi51676-source/astrbot_plugin_multimodal_enhance
 astrbot_version: ">=4.27.0,<5"

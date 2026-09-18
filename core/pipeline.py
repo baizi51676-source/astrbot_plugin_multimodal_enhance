@@ -322,6 +322,9 @@ class MediaPipeline:
 
     async def on_message(self, event) -> None:
         try:
+            # 仅处理真正唤醒/@ 了 bot 的消息；避免群里的链接被误触发解析与「正在分析中」提示
+            if not bool(getattr(event, "is_at_or_wake_command", True)):
+                return
             if not self.plugin.conf.is_globally_enabled():
                 return
             flags = self.plugin.resolve_flags_for_event(event)

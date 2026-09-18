@@ -1,40 +1,65 @@
-/* 多模态理解增强控制台样式（支持亮/暗主题，data-theme 由 AstrBot 注入） */
+/* 多模态理解增强控制台样式（莫奈取色主题 + 背景高斯模糊遮罩；data-theme 由 AstrBot 注入） */
 :root {
-  --bg: #f6f7f9;
-  --card: #ffffff;
-  --text: #1f2328;
-  --muted: #667085;
-  --border: #e4e7ec;
-  --primary: #4b6bfb;
+  --bg: #f1f1f4;
+  --card: rgba(255, 255, 255, 0.86);
+  --text: #23262d;
+  --muted: #6b7280;
+  --border: rgba(78, 87, 110, 0.18);
+  --primary: #4e576e;
   --primary-text: #ffffff;
+  --primary-soft: rgba(78, 87, 110, 0.12);
+  --accent: #8e8c97;
   --danger: #d92d20;
   --ok: #12b76a;
   --warn: #f79009;
-  --log-bg: #0f172a;
+  --log-bg: rgba(31, 34, 48, 0.92);
   --log-text: #d5dbe7;
+  --mask: rgba(244, 244, 248, 0.82);
+  --blur: 18px;
 }
 [data-theme="dark"] {
-  --bg: #14161a;
-  --card: #1d2026;
+  --bg: #17181d;
+  --card: rgba(29, 31, 40, 0.82);
   --text: #e6e8ee;
   --muted: #98a2b3;
-  --border: #2c313a;
-  --primary: #6f86ff;
-  --primary-text: #10131a;
+  --border: rgba(139, 145, 160, 0.25);
+  --primary: #8b91a0;
+  --primary-text: #14161b;
+  --primary-soft: rgba(139, 145, 160, 0.18);
+  --accent: #8e8c97;
   --danger: #f97066;
   --ok: #32d583;
   --warn: #fdb022;
-  --log-bg: #0b0f17;
+  --log-bg: rgba(10, 12, 18, 0.92);
   --log-text: #cfd6e4;
+  --mask: rgba(12, 13, 18, 0.80);
 }
 * { box-sizing: border-box; }
+html, body { min-height: 100%; }
 body {
   margin: 0;
-  background: var(--bg);
   color: var(--text);
   font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   font-size: 14px;
   line-height: 1.6;
+  background: var(--bg);
+}
+/* 背景图 + 高斯模糊 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -40px;
+  z-index: -2;
+  background: url("./assets/bg.jpg") center / cover no-repeat;
+  filter: blur(var(--blur)) saturate(1.05);
+}
+/* 遮罩层（保证可读性） */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: var(--mask);
 }
 .topbar {
   display: flex; justify-content: space-between; align-items: center;
@@ -59,6 +84,7 @@ main { padding: 16px 20px 40px; }
 .block {
   background: var(--card); border: 1px solid var(--border);
   border-radius: 10px; padding: 16px; margin-bottom: 16px;
+  backdrop-filter: blur(4px);
 }
 .block-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .block-head h2 { font-size: 15px; margin: 0; }
@@ -66,6 +92,7 @@ main { padding: 16px 20px 40px; }
 .card {
   background: var(--card); border: 1px solid var(--border);
   border-radius: 10px; padding: 12px 14px;
+  backdrop-filter: blur(4px);
 }
 .card .k { color: var(--muted); font-size: 12px; }
 .card .v { font-size: 16px; font-weight: 600; margin-top: 4px; word-break: break-all; }
@@ -134,9 +161,15 @@ main { padding: 16px 20px 40px; }
 .subtab.active { color: var(--primary-text); background: var(--primary); border-color: var(--primary); }
 .subtab.add { border-style: dashed; }
 .override-list { margin: 0; padding-left: 18px; font-size: 12px; }
-.override-list code { background: rgba(127, 127, 127, 0.15); padding: 0 4px; border-radius: 4px; }
+.override-list code { background: var(--primary-soft); padding: 0 4px; border-radius: 4px; }
 .field .src { font-size: 12px; color: var(--muted); margin-left: 6px; font-weight: 400; }
 .btn.tiny { padding: 2px 8px; font-size: 12px; margin-left: 8px; }
 .btn.danger { border-color: var(--danger); color: var(--danger); }
 .bot-header { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 @media (max-width: 640px) { .bot-header { grid-template-columns: 1fr; } }
+
+/* 页脚（素材说明） */
+.footer {
+  text-align: center; color: var(--muted); font-size: 12px;
+  padding: 18px 16px 30px; opacity: .85;
+}
