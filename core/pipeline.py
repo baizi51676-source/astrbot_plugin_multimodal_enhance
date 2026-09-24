@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from urllib.parse import unquote, urlparse
 
-from . import llm as llm_utils
+from . import capabilities, llm as llm_utils
 from .config import _to_bool, _to_int, _to_str
 from .media import audio_analyzer, bilibili, ncm, video_analyzer
 from .media.downloader import download_url, pick_video_meta, ytdlp_download, ytdlp_json
@@ -33,8 +33,6 @@ except Exception:  # pragma: no cover
 
 AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg", ".amr", ".silk", ".opus"}
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".flv"}
-GOOD_STT_EXTS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".opus"}
-
 BILI_PATTERN = re.compile(
     r"(?:https?://)?(?:www\.|m\.)?bilibili\.com/video/[A-Za-z0-9]+[^\s\"'<>）)]*"
     r"|(?:https?://)?b23\.tv/[A-Za-z0-9]+"
@@ -77,6 +75,7 @@ class Detected:
     direct_audio_urls: list = field(default_factory=list)
     direct_video_urls: list = field(default_factory=list)
     seen_gated: list = field(default_factory=list)      # 功能未启用而跳过的媒体
+    attachments: list = field(default_factory=list)     # [{"kind": "audio"/"image", "path": ...}]
 
     @property
     def empty(self) -> bool:
@@ -398,7 +397,7 @@ class MediaPipeline:
             det = self.detect(event, flags, settings)
             if det.reply_probe_ids:
                 try:
-                    await self._probe_reply_voices(event, det)
+                    await self._probe_reply_voices(event, det, settings)
                 except Exception:
                     pass
             if det.empty:
@@ -442,13 +441,15 @@ class MediaPipeline:
         except Exception as exc:
             self.plugin.log.error(f"消息检测异常：{exc}")
 
-    async def _probe_reply_voices(self, event, det: Detected) -> None:
+    async def _probe_reply_voices(self, event, det: Detected,
+                                  settings: dict | None = None) -> None:
         """探测被引用消息中是否含语音（原生 STT 开启时 Record 会被替换成文本）。"""
         event_bot = self._event_bot(event)
         if event_bot is None:
             return
+        limit = max(1, _sget_int(settings or {}, "max_items_per_type", 3))
         seen = {str(ref.get("seg", {}).get("file", "")) for ref in det.raw_voices}
-        for rid in det.reply_probe_ids[:2]:
+        for rid in det.reply_probe_ids[:limit]:
             try:
                 mid = int(rid)
             except Exception:
@@ -483,16 +484,21 @@ class MediaPipeline:
             text = "\n\n".join(p for p in parts if p)
             if len(text) > MAX_TOTAL_CHARS:
                 text = text[:MAX_TOTAL_CHARS] + "\n……（解析内容过长，已截断）"
-            if text:
+            atts = list(getattr(det, "attachments", []) or [])
+            if text or atts:
                 self._results[key] = {"text": text, "workdir": workdir,
-                                      "ts": time.time()}
-                try:
-                    setattr(event, "_mme_analysis", text)
-                except Exception:
-                    pass
-                self.plugin.log.info(f"解析完成：{key}（{len(text)} 字）")
+                                      "ts": time.time(), "attachments": atts}
+                if text:
+                    try:
+                        setattr(event, "_mme_analysis", text)
+                    except Exception:
+                        pass
+                extra = f"，附件 {len(atts)} 个" if atts else ""
+                self.plugin.log.info(f"解析完成：{key}（{len(text)} 字{extra}）")
             else:
                 self.plugin.log.info(f"解析完成但无可注入内容：{key}")
+                if not self.plugin.conf.bool("env_keep_temp", False):
+                    shutil.rmtree(workdir, ignore_errors=True)
         except Exception as exc:
             self.plugin.log.error(f"解析失败：{key}：{exc}")
         finally:
@@ -507,32 +513,50 @@ class MediaPipeline:
         ffmpeg = find_tool("ffmpeg", conf.str("env_ffmpeg_path")) or "ffmpeg"
         ffprobe = find_tool("ffprobe", "") or "ffprobe"
         ytdlp = find_tool("yt-dlp", conf.str("env_ytdlp_path")) or "yt-dlp"
+        per_type = max(1, _sget_int(settings, "max_items_per_type", 3))
+        mods = await capabilities.chat_modalities(
+            self.plugin.context, umo,
+            _sget_bool(settings, "attach_when_unset", False))
+        attach = capabilities.attach_flags(
+            mods,
+            audio_on=_sget_bool(settings, "model_attach_audio", True),
+            frames_on=_sget_bool(settings, "model_attach_frames", True),
+        )
+        attach["max_bytes"] = max(1, _sget_int(settings, "attach_audio_max_mb", 20)) * 1024 * 1024
+        attach["files"] = []
+        if attach.get("audio") or attach.get("image"):
+            self.plugin.log.info(
+                "主模型支持多模态输入，启用附件直传（音频=%s，图片=%s）。"
+                % (attach.get("audio"), attach.get("image")))
         parts: list[str] = []
-        for idx, (comp, quoted) in enumerate((det.voices + det.audio_files)[:3], 1):
+        for idx, (comp, quoted) in enumerate((det.voices + det.audio_files)[:per_type], 1):
             parts.append(await self._analyze_audio_component(
-                comp, quoted, idx, workdir, ffmpeg, ffprobe, settings, umo))
-        for ref in det.raw_voices[:3]:
+                comp, quoted, idx, workdir, ffmpeg, ffprobe, settings, umo, attach))
+        for ref in det.raw_voices[:per_type]:
             parts.append(await self._analyze_raw_voice(
-                event, ref, workdir, ffmpeg, ffprobe, settings, umo))
-        for ref, quoted in det.music_refs[:3]:
-            parts.append(await self._analyze_music_ref(ref, quoted, workdir, ffmpeg, settings))
-        for url in det.direct_audio_urls[:2]:
+                event, ref, workdir, ffmpeg, ffprobe, settings, umo, attach))
+        for ref, quoted in det.music_refs[:per_type]:
+            parts.append(await self._analyze_music_ref(ref, quoted, workdir, ffmpeg,
+                                                       settings, umo, attach))
+        for url in det.direct_audio_urls[:per_type]:
             parts.append(await self._analyze_audio_url(url, workdir, ffmpeg, ffprobe,
-                                                       settings, umo))
-        for rid in det.reply_ids[:2]:
+                                                       settings, umo, attach))
+        for rid in det.reply_ids[:per_type]:
             parts.append(await self._analyze_reply_id(event, rid, workdir, ffmpeg,
-                                                      ffprobe, settings, umo))
+                                                      ffprobe, settings, umo, attach))
 
         if flags.get("video_enabled"):
-            for idx, (comp, quoted) in enumerate(det.videos[:2], 1):
+            for idx, (comp, quoted) in enumerate(det.videos[:per_type], 1):
                 parts.append(await self._analyze_video_component(
-                    comp, quoted, idx, workdir, ffmpeg, ffprobe, settings, umo))
-            for url, quoted in det.bili_urls[:2]:
+                    comp, quoted, idx, workdir, ffmpeg, ffprobe, settings, umo, attach))
+            for url, quoted in det.bili_urls[:per_type]:
                 parts.append(await self._analyze_bili(url, quoted, workdir, ffmpeg, ffprobe,
-                                                      ytdlp, settings, umo))
-            for url in det.direct_video_urls[:2]:
+                                                      ytdlp, settings, umo, attach))
+            for url in det.direct_video_urls[:per_type]:
                 parts.append(await self._analyze_direct_video(url, workdir, ffmpeg,
-                                                              ffprobe, settings, umo))
+                                                              ffprobe, settings, umo, attach))
+        if attach.get("files"):
+            det.attachments = list(attach["files"])
         return parts
 
     # -------- 媒体落地（核心修复） --------
@@ -637,7 +661,7 @@ class MediaPipeline:
 
     async def _analyze_audio_component(self, comp, quoted: bool, idx: int, workdir: str,
                                        ffmpeg: str, ffprobe: str, settings: dict,
-                                       umo: str) -> str:
+                                       umo: str, attach: dict | None = None) -> str:
         label = "语音消息" if "record" in type(comp).__name__.lower() else "音频文件"
         if quoted:
             label = "引用消息中的" + label
@@ -646,6 +670,45 @@ class MediaPipeline:
         if not path:
             lines.append("（无法获取到音频文件，已跳过）")
             return "\n".join(lines)
+        if self._collect_audio_attachment(attach, path, label):
+            lines.append("（音频已作为附件随消息发送，主模型可直接理解）")
+            return "\n".join(lines)
+        lines.extend(await self._audio_lines(path, settings, ffmpeg, ffprobe, umo, workdir))
+        return "\n".join(lines)
+
+    # -------- 附件直传（主模型支持音频/图片时） --------
+
+    def _collect_audio_attachment(self, attach: dict | None, path: str, label: str) -> bool:
+        """附件直传模式：登记音频附件（受体积上限保护）。"""
+        if not attach or not attach.get("audio"):
+            return False
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        limit = int(attach.get("max_bytes") or 0)
+        if size <= 0 or (limit and size > limit):
+            self.plugin.log.info(f"音频过大或不可用（{size} bytes），改为文本解析：{label}")
+            return False
+        attach.setdefault("files", []).append({"kind": "audio", "path": path})
+        return True
+
+    def _collect_frames(self, attach: dict | None, frames: list) -> bool:
+        """附件直传模式：登记抽帧图片附件。"""
+        if not attach or not attach.get("image") or not frames:
+            return False
+        added = False
+        for fr in frames:
+            frame_path = fr.get("path") if isinstance(fr, dict) else None
+            if frame_path and os.path.isfile(frame_path):
+                attach.setdefault("files", []).append({"kind": "image", "path": frame_path})
+                added = True
+        return added
+
+    async def _audio_lines(self, path: str, settings: dict, ffmpeg: str, ffprobe: str,
+                           umo: str, workdir: str) -> list[str]:
+        """音频文本解析：元数据 + 转文本 +（可选）频谱 +（可选）深度分析。"""
+        lines: list[str] = []
         probe = await probe_media(path, ffprobe)
         if probe:
             lines.append("元数据：" + (video_analyzer.meta_line(summarize_probe(probe)) or "未知"))
@@ -654,7 +717,23 @@ class MediaPipeline:
             lines.append(f"转文本：{text[:2000]}")
         else:
             lines.append("（未配置语音转文本模型或转写为空，已跳过转文本）")
-        return "\n".join(lines)
+        if not text or _sget_bool(settings, "audio_spectrum_always", False):
+            spectrum = await self._spectrum_for(path, ffmpeg, settings)
+            if spectrum:
+                prefix = ("频谱数据（文本）：" if text
+                          else "频谱数据（文本，未获得转文本结果时的替代）：")
+                lines.append(prefix + "\n" + spectrum)
+        mode = _sget_str(settings, "audio_deep_mode", "auto")
+        if mode != "off":
+            if audio_analyzer.has_librosa():
+                limit = _sget_int(settings, "audio_deep_max_seconds", 300)
+                summary = await asyncio.get_event_loop().run_in_executor(
+                    None, audio_analyzer.deep_summary, path, limit)
+                if summary:
+                    lines.append("深度分析（声纹包式）：\n" + audio_analyzer.deep_summary_text(summary))
+            elif mode == "on":
+                lines.append("（深度分析需要 librosa，可在插件页面「环境配置」中一键安装）")
+        return lines
 
     async def _resolve_record_seg(self, event, seg_data: dict, workdir: str,
                                   max_bytes: int) -> str | None:
@@ -693,7 +772,8 @@ class MediaPipeline:
         return None
 
     async def _analyze_raw_voice(self, event, ref: dict, workdir: str, ffmpeg: str,
-                                 ffprobe: str, settings: dict, umo: str) -> str:
+                                 ffprobe: str, settings: dict, umo: str,
+                                 attach: dict | None = None) -> str:
         """解析 raw 兜底找到的语音（原生 STT 已把 Record 替换成文本的场景）。"""
         quoted = bool(ref.get("quoted"))
         label = "引用消息中的语音消息" if quoted else "语音消息"
@@ -703,14 +783,10 @@ class MediaPipeline:
         if not path:
             lines.append("（无法获取到语音文件，已跳过）")
             return "\n".join(lines)
-        probe = await probe_media(path, ffprobe)
-        if probe:
-            lines.append("元数据：" + (video_analyzer.meta_line(summarize_probe(probe)) or "未知"))
-        text = await self._transcribe(umo, path, settings, ffmpeg, workdir)
-        if text:
-            lines.append(f"转文本：{text[:2000]}")
-        else:
-            lines.append("（未配置语音转文本模型或转写为空，已跳过转文本）")
+        if self._collect_audio_attachment(attach, path, label):
+            lines.append("（音频已作为附件随消息发送，主模型可直接理解）")
+            return "\n".join(lines)
+        lines.extend(await self._audio_lines(path, settings, ffmpeg, ffprobe, umo, workdir))
         return "\n".join(lines)
 
     async def _transcribe(self, umo: str, path: str, settings: dict,
@@ -735,6 +811,7 @@ class MediaPipeline:
         # 2) 超过单段上限（如 MiMo STT 的 10MB）则自动拆分
         parts = [base]
         truncated = False
+        max_chunks = max(1, _sget_int(settings, "audio_stt_max_chunks", 12))
         chunk_mb = _sget_int(settings, "audio_stt_chunk_mb", 7)
         if chunk_mb > 0 and workdir:
             max_bytes = chunk_mb * 1024 * 1024
@@ -744,8 +821,8 @@ class MediaPipeline:
                 size = 0
             if size > max_bytes:
                 parts = audio_analyzer.split_wav(base, max_bytes, workdir)
-                if len(parts) > 12:
-                    parts = parts[:12]
+                if len(parts) > max_chunks:
+                    parts = parts[:max_chunks]
                     truncated = True
                 if len(parts) > 1:
                     self.plugin.log.info(f"音频超过 {chunk_mb}MB，已拆分为 {len(parts)} 段转写。")
@@ -768,27 +845,22 @@ class MediaPipeline:
                 self.plugin.log.warn(f"语音转文本失败（原文件重试）：{exc}")
         joined = "".join(texts)
         if truncated:
-            joined += "……（音频过长，仅转写前12段）"
+            joined += f"……（音频过长，仅转写前 {max_chunks} 段）"
         return joined
 
     async def _analyze_audio_url(self, url: str, workdir: str, ffmpeg: str,
-                                 ffprobe: str, settings: dict, umo: str) -> str:
+                                 ffprobe: str, settings: dict, umo: str,
+                                 attach: dict | None = None) -> str:
         lines = ["【音频链接】"]
         dest = os.path.join(workdir, f"audiolink_{uuid.uuid4().hex[:6]}.bin")
         ok, msg = await download_url(url, dest, AUDIO_MAX_BYTES)
         if not ok:
             lines.append(f"下载失败：{msg}")
             return "\n".join(lines)
-        probe = await probe_media(dest, ffprobe)
-        if probe:
-            lines.append("元数据：" + (video_analyzer.meta_line(summarize_probe(probe)) or "未知"))
-        text = await self._transcribe(umo, dest, settings, ffmpeg, workdir)
-        if text:
-            lines.append(f"转文本：{text[:2000]}")
-        else:
-            spectrum = await self._spectrum_for(dest, ffmpeg, settings)
-            if spectrum:
-                lines.append("频谱数据（文本，未获得转文本结果时的替代）：\n" + spectrum)
+        if self._collect_audio_attachment(attach, dest, "音频链接"):
+            lines.append("（音频已作为附件随消息发送，主模型可直接理解）")
+            return "\n".join(lines)
+        lines.extend(await self._audio_lines(dest, settings, ffmpeg, ffprobe, umo, workdir))
         return "\n".join(lines)
 
     async def _spectrum_for(self, path: str, ffmpeg: str, settings: dict,
@@ -805,13 +877,19 @@ class MediaPipeline:
     # -------- 音乐链接 --------
 
     async def _analyze_music_ref(self, ref, quoted: bool, workdir: str, ffmpeg: str,
-                                 settings: dict) -> str:
+                                 settings: dict, umo: str = "",
+                                 attach: dict | None = None) -> str:
         cookie = _sget_str(settings, "audio_ncm_cookie", "")
         lines = ["【音乐链接解析】网易云音乐" + ("（引用消息）" if quoted else "")]
         song_id = await ncm.resolve_song_id(ref)
         if not song_id:
             lines.append("（短链解析失败，已跳过）")
             return "\n".join(lines)
+        if attach and attach.get("audio"):
+            song_path = await ncm.download_song(song_id, workdir, cookie)
+            if song_path and self._collect_audio_attachment(attach, song_path, "音乐音频"):
+                lines.append("（歌曲音频已作为附件随消息发送，主模型可直接理解）")
+                return "\n".join(lines)
         detail = await ncm.fetch_song_detail(song_id, cookie)
         if detail:
             lines.append(f"歌曲：{detail.get('name', '?')} - {detail.get('artists', '?')}")
@@ -827,8 +905,9 @@ class MediaPipeline:
             mode = _sget_str(settings, "audio_deep_mode", "auto")
             if mode != "off":
                 if audio_analyzer.has_librosa():
+                    limit = _sget_int(settings, "audio_deep_max_seconds", 300)
                     summary = await asyncio.get_event_loop().run_in_executor(
-                        None, audio_analyzer.deep_summary, path)
+                        None, audio_analyzer.deep_summary, path, limit)
                     if summary:
                         lines.append("深度分析（声纹包式）：\n" + audio_analyzer.deep_summary_text(summary))
                 elif mode == "on":
@@ -847,7 +926,7 @@ class MediaPipeline:
 
     async def _analyze_video_component(self, comp, quoted: bool, idx: int, workdir: str,
                                        ffmpeg: str, ffprobe: str, settings: dict,
-                                       umo: str) -> str:
+                                       umo: str, attach: dict | None = None) -> str:
         max_bytes = _sget_int(settings, "video_max_size_mb", 100) * 1024 * 1024
         label = "引用消息中的视频" if quoted else "视频消息"
         lines = [f"【视频解析 #{idx}】来源：{label}"]
@@ -855,54 +934,74 @@ class MediaPipeline:
         if not path:
             lines.append("（无法获取到视频文件，已跳过）")
             return "\n".join(lines)
-        lines.append(await self._analyze_video_file(path, workdir, ffmpeg, ffprobe, settings, umo))
+        lines.append(await self._analyze_video_file(path, workdir, ffmpeg, ffprobe,
+                                                    settings, umo, attach))
         return "\n".join(lines)
 
     async def _analyze_video_file(self, path: str, workdir: str, ffmpeg: str,
-                                  ffprobe: str, settings: dict, umo: str) -> str:
+                                  ffprobe: str, settings: dict, umo: str,
+                                  attach: dict | None = None) -> str:
+        max_minutes = _sget_int(settings, "video_max_minutes", 10)
+        probe = await probe_media(path, ffprobe)
+        meta = summarize_probe(probe) if probe else {"duration": None}
+        lines: list[str] = ["元数据：" + (video_analyzer.meta_line(meta) or "未知")]
+        duration = meta.get("duration") or 0
+        if duration and duration > max_minutes * 60:
+            lines.append(f"（视频时长 {duration / 60:.1f} 分钟，超过上限 {max_minutes} 分钟，"
+                         "未进行画面/音轨解析）")
+            return "\n".join(lines)
         result = await video_analyzer.analyze_video_source(
             path, workdir, ffmpeg, ffprobe,
             frame_count=_sget_int(settings, "video_frames", 6),
             frame_width=_sget_int(settings, "video_frame_width", 640),
         )
-        lines: list[str] = []
-        lines.append("元数据：" + (video_analyzer.meta_line(result["meta"]) or "未知"))
         frames = result.get("frames") or []
-        caption_provider = _sget_str(settings, "video_caption_provider", "") \
-            or self._caption_provider_id()
-        if frames:
-            descs = []
-            for fr in frames[:10]:
-                desc = await llm_utils.describe_image(
-                    self.plugin.context, umo, fr["path"], caption_provider,
-                    instruction=(f"这是视频中的一帧（约第{fr['time']}秒）。"
-                                 "请用一两句简洁中文描述画面内容（人物/场景/动作/文字），不要额外解释。"),
-                )
+        if frames and self._collect_frames(attach, frames):
+            lines.append(f"（画面已作为 {len(frames)} 帧图片附件随消息发送，主模型可直接理解）")
+        elif frames:
+            caption_provider = _sget_str(settings, "video_caption_provider", "") \
+                or self._caption_provider_id()
+            concurrency = max(1, min(8, _sget_int(settings, "video_caption_concurrency", 3)))
+            sem = asyncio.Semaphore(concurrency)
+
+            async def _caption_one(fr: dict):
+                async with sem:
+                    desc = await llm_utils.describe_image(
+                        self.plugin.context, umo, fr["path"], caption_provider,
+                        instruction=(f"这是视频中的一帧（约第{fr['time']}秒）。"
+                                     "请用一两句简洁中文描述画面内容（人物/场景/动作/文字），不要额外解释。"),
+                    )
+                return fr, desc
+
+            results = await asyncio.gather(
+                *[_caption_one(fr) for fr in frames], return_exceptions=True)
+            descs: list[str] = []
+            for item in results:
+                if isinstance(item, Exception):
+                    continue
+                fr, desc = item
                 if desc:
                     descs.append(f"{fr['time']}s：{desc}")
             if descs:
-                lines.append(f"画面理解（逐帧描述）：\n" + "\n".join(descs))
+                lines.append("画面理解（逐帧描述）：\n" + "\n".join(descs))
             elif not caption_provider:
                 lines.append("（未能描述画面：未配置图转文模型——请在 AstrBot「图片描述」"
                              "或本插件「帧描述模型」中指定）")
             else:
                 lines.append(f"（画面描述调用失败，模型 {caption_provider}）")
         if result.get("audio_path"):
-            audio_lines = ["音轨解析："]
-            text = await self._transcribe(umo, result["audio_path"], settings, ffmpeg, workdir)
-            if text:
-                audio_lines.append(f"转文本：{text[:2000]}")
+            if self._collect_audio_attachment(attach, result["audio_path"], "视频音轨"):
+                lines.append("（音轨已作为音频附件随消息发送，主模型可直接理解）")
             else:
-                spectrum = await self._spectrum_for(result["audio_path"], ffmpeg, settings)
-                if spectrum:
-                    audio_lines.append("频谱数据（文本，未获得转文本结果时的替代）：\n" + spectrum)
-                else:
-                    audio_lines.append("（未配置语音转文本模型，音轨内容已跳过）")
-            lines.append("\n".join(audio_lines))
+                audio_lines = ["音轨解析："]
+                audio_lines.extend(await self._audio_lines(
+                    result["audio_path"], settings, ffmpeg, ffprobe, umo, workdir))
+                lines.append("\n".join(audio_lines))
         return "\n".join(lines)
 
     async def _analyze_bili(self, url: str, quoted: bool, workdir: str, ffmpeg: str,
-                            ffprobe: str, ytdlp: str, settings: dict, umo: str) -> str:
+                            ffprobe: str, ytdlp: str, settings: dict, umo: str,
+                            attach: dict | None = None) -> str:
         max_bytes = _sget_int(settings, "video_max_size_mb", 100) * 1024 * 1024
         max_minutes = _sget_int(settings, "video_max_minutes", 10)
         lines = ["【B站视频解析" + ("（引用消息）" if quoted else "") + "】"]
@@ -936,7 +1035,7 @@ class MediaPipeline:
                 lines.append("（视频下载失败或超过体积上限，未进行画面/音轨解析）")
                 return "\n".join(lines)
             lines.append(await self._analyze_video_file(path, workdir, ffmpeg, ffprobe,
-                                                        settings, umo))
+                                                        settings, umo, attach))
             return "\n".join(lines)
 
         # API 失败：回退 yt-dlp 旧通道
@@ -961,11 +1060,12 @@ class MediaPipeline:
         if not path:
             lines.append("（下载失败或超过体积上限，未进行画面/音轨解析）")
             return "\n".join(lines)
-        lines.append(await self._analyze_video_file(path, workdir, ffmpeg, ffprobe, settings, umo))
+        lines.append(await self._analyze_video_file(path, workdir, ffmpeg, ffprobe, settings, umo, attach))
         return "\n".join(lines)
 
     async def _analyze_direct_video(self, url: str, workdir: str, ffmpeg: str,
-                                    ffprobe: str, settings: dict, umo: str) -> str:
+                                    ffprobe: str, settings: dict, umo: str,
+                                    attach: dict | None = None) -> str:
         max_bytes = _sget_int(settings, "video_max_size_mb", 100) * 1024 * 1024
         lines = ["【视频链接解析】"]
         dest = os.path.join(workdir, f"videolink_{uuid.uuid4().hex[:6]}.bin")
@@ -973,11 +1073,13 @@ class MediaPipeline:
         if not ok:
             lines.append(f"下载失败：{msg}")
             return "\n".join(lines)
-        lines.append(await self._analyze_video_file(dest, workdir, ffmpeg, ffprobe, settings, umo))
+        lines.append(await self._analyze_video_file(dest, workdir, ffmpeg, ffprobe,
+                                                    settings, umo, attach))
         return "\n".join(lines)
 
     async def _analyze_reply_id(self, event, rid: str, workdir: str, ffmpeg: str,
-                                ffprobe: str, settings: dict, umo: str) -> str:
+                                ffprobe: str, settings: dict, umo: str,
+                                attach: dict | None = None) -> str:
         """兜底：Reply.chain 为空时，用 OneBot get_msg 拉取被引用消息再解析。"""
         lines = ["【引用消息解析（API 获取）】"]
         event_bot = self._event_bot(event)
@@ -1014,22 +1116,15 @@ class MediaPipeline:
                                                      _sget_int(settings, "video_max_size_mb", 100) * 1024 * 1024)
                 if path:
                     lines.append(await self._analyze_video_file(path, workdir, ffmpeg,
-                                                                ffprobe, settings, umo))
+                                                                ffprobe, settings, umo, attach))
             elif seg_type in ("record", "voice"):
-                url = str(seg_data.get("url") or "")
-                file_ref = str(seg_data.get("file") or "")
-                path = None
-                if url.startswith("http"):
-                    dest = os.path.join(workdir, f"qr_{uuid.uuid4().hex[:6]}.bin")
-                    ok, _m = await download_url(url, dest, AUDIO_MAX_BYTES)
-                    if ok:
-                        path = dest
-                elif file_ref:
-                    path = await self._resolve_value(file_ref, workdir, AUDIO_MAX_BYTES)
+                path = await self._resolve_record_seg(event, seg_data, workdir, AUDIO_MAX_BYTES)
                 if path:
-                    text = await self._transcribe(umo, path, settings, ffmpeg, workdir)
-                    if text:
-                        lines.append(f"语音转文本：{text[:2000]}")
+                    if self._collect_audio_attachment(attach, path, "引用语音"):
+                        lines.append("（引用语音已作为附件随消息发送，主模型可直接理解）")
+                    else:
+                        lines.extend(await self._audio_lines(
+                            path, settings, ffmpeg, ffprobe, umo, workdir))
         if len(lines) == 1:
             lines.append("（引用消息中未发现可解析的媒体）")
         return "\n".join(lines)
@@ -1048,34 +1143,85 @@ class MediaPipeline:
                 pass
 
     def inject(self, event, req) -> None:
-        text = getattr(event, "_mme_analysis", None)
+        """注入解析结果：文本块 +（可选）音频/图片附件直传。"""
         key = self._key(event)
-        if not text:
-            result = self._results.get(key)
-            text = result.get("text") if result else None
-        if not text:
-            return
-        try:
-            from astrbot.core.agent.message import TextPart  # type: ignore
-        except Exception:
-            self.plugin.log.warn("注入失败：当前 AstrBot 版本缺少 TextPart")
-            return
-        block = f"<multimodal_analysis>\n{text}\n</multimodal_analysis>"
-        try:
-            part = TextPart(text=block)
-            mark = getattr(part, "mark_as_temp", None)
-            if callable(mark):
-                part = mark()
-            req.extra_user_content_parts.append(part)
-            self.plugin.log.info("已向本轮 LLM 请求注入多模态解析结果。")
-        except Exception as exc:
-            self.plugin.log.warn(f"注入失败：{exc}")
-            return
-        try:
-            delattr(event, "_mme_analysis")
-        except Exception:
-            pass
-        self._cleanup_key(key)
+        result = self._results.get(key) or {}
+        text = getattr(event, "_mme_analysis", None) or result.get("text") or ""
+        files = result.get("attachments") or []
+        audio = [f["path"] for f in files
+                 if isinstance(f, dict) and f.get("kind") == "audio" and f.get("path")]
+        images = [f["path"] for f in files
+                  if isinstance(f, dict) and f.get("kind") == "image" and f.get("path")]
+        attached = self._append_attachments(req, audio, images)
+        if text:
+            try:
+                from astrbot.core.agent.message import TextPart  # type: ignore
+            except Exception:
+                self.plugin.log.warn("注入失败：当前 AstrBot 版本缺少 TextPart")
+                text = ""
+        if text:
+            block = f"<multimodal_analysis>\n{text}\n</multimodal_analysis>"
+            try:
+                part = TextPart(text=block)
+                mark = getattr(part, "mark_as_temp", None)
+                if callable(mark):
+                    part = mark()
+                req.extra_user_content_parts.append(part)
+                self.plugin.log.info("已向本轮 LLM 请求注入多模态解析结果。")
+            except Exception as exc:
+                self.plugin.log.warn(f"注入失败：{exc}")
+        if text or attached:
+            try:
+                delattr(event, "_mme_analysis")
+            except Exception:
+                pass
+        if attached:
+            # 附件需在模型调用期间保留文件：延后到 _prune 过期清理
+            result["ts"] = time.time()
+        else:
+            self._cleanup_key(key)
+
+    def _append_attachments(self, req, audio: list[str], images: list[str]) -> bool:
+        """把音频/图片附件追加到本轮请求（供主模型直接理解）。"""
+        attached = False
+
+        def _existing(attr: str) -> set[str]:
+            try:
+                values = list(getattr(req, attr, None) or [])
+            except Exception:
+                return set()
+            out: set[str] = set()
+            for value in values:
+                if isinstance(value, str) and value:
+                    try:
+                        out.add(os.path.realpath(value))
+                    except OSError:
+                        out.add(value)
+            return out
+
+        if audio:
+            existing = _existing("audio_urls")
+            new_files = [p for p in audio if os.path.realpath(p) not in existing]
+            if new_files:
+                try:
+                    req.audio_urls = list(getattr(req, "audio_urls", None) or []) + new_files
+                    attached = True
+                    self.plugin.log.info(
+                        f"已附加音频附件 {len(new_files)} 个（主模型可直接理解）。")
+                except Exception as exc:
+                    self.plugin.log.warn(f"音频附件附加失败：{exc}")
+        if images:
+            existing = _existing("image_urls")
+            new_files = [p for p in images if os.path.realpath(p) not in existing]
+            if new_files:
+                try:
+                    req.image_urls = list(getattr(req, "image_urls", None) or []) + new_files
+                    attached = True
+                    self.plugin.log.info(
+                        f"已附加图片附件 {len(new_files)} 帧（主模型可直接理解）。")
+                except Exception as exc:
+                    self.plugin.log.warn(f"图片附件附加失败：{exc}")
+        return attached
 
     def _cleanup_key(self, key: str) -> None:
         result = self._results.pop(key, None)

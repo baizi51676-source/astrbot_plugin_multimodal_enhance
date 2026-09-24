@@ -38,7 +38,7 @@ except Exception:  # pragma: no cover - 旧版 AstrBot 无插件页面 API
     _WEB_AVAILABLE = False
 
 PLUGIN_NAME = "astrbot_plugin_multimodal_enhance"
-PLUGIN_VERSION = "v0.1.8"
+PLUGIN_VERSION = "v0.1.9"
 
 # 插件页面配置表（也用于保存时的类型校验）
 _CONFIG_META = [
@@ -86,6 +86,22 @@ _CONFIG_META = [
     {"key": "video_bili_enabled", "group": "视频理解", "label": "B站链接解析", "type": "bool"},
     {"key": "video_caption_provider", "group": "视频理解", "label": "帧描述（图转文）模型",
      "type": "provider", "hint": "留空 = 跟随 AstrBot 的「图片描述」设置。"},
+    {"key": "video_caption_concurrency", "group": "视频理解", "label": "逐帧描述并发数", "type": "int"},
+    {"key": "max_items_per_type", "group": "基础", "label": "同类媒体最多解析数量", "type": "int",
+     "hint": "语音/音频、音乐链接、B站、视频、引用消息等每类最多解析条数。"},
+    {"key": "audio_spectrum_always", "group": "音频理解", "label": "总是输出频谱", "type": "bool",
+     "hint": "开启后即使已转文本也附带频谱文本。"},
+    {"key": "audio_stt_max_chunks", "group": "音频理解", "label": "长音频最多拆分段数", "type": "int"},
+    {"key": "audio_deep_max_seconds", "group": "音频理解", "label": "深度分析最长秒数", "type": "int",
+     "hint": "0 = 不限制。"},
+    {"key": "model_attach_audio", "group": "附件直传", "label": "音频：主模型支持时直传附件", "type": "bool",
+     "hint": "主模型支持音频输入时，语音/音频/音乐作为附件直发，不再转文本。"},
+    {"key": "model_attach_frames", "group": "附件直传", "label": "视频抽帧：主模型支持图片时直传", "type": "bool",
+     "hint": "主模型支持图片输入时，抽帧作为图片附件直发，不再逐帧转述。"},
+    {"key": "attach_when_unset", "group": "附件直传", "label": "未声明 modalities 时按支持处理", "type": "bool",
+     "hint": "默认关闭（保守）。确认主模型支持音频/图片输入时可开启。"},
+    {"key": "attach_audio_max_mb", "group": "附件直传", "label": "音频附件体积上限（MB）", "type": "int",
+     "hint": "超过则回退为文本解析。"},
     {"key": "env_ffmpeg_path", "group": "环境", "label": "FFmpeg 路径", "type": "string",
      "hint": "留空 = 自动查找 PATH。"},
     {"key": "env_ytdlp_path", "group": "环境", "label": "yt-dlp 路径", "type": "string",

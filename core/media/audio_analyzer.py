@@ -183,15 +183,19 @@ def _describe_temperature(centroid: float, harmonic_ratio: float, low_mid: float
     return "冷"
 
 
-def deep_summary(path: str) -> dict | None:
-    """声纹包式摘要（需 librosa）。失败返回 None。"""
+def deep_summary(path: str, max_seconds: int = 300) -> dict | None:
+    """声纹包式摘要（需 librosa）。失败返回 None。
+
+    max_seconds > 0 时仅分析前若干秒，避免超长音频占用过多内存与时间（0 = 不限制）。
+    """
     try:
         import librosa
         import numpy as np
     except Exception:
         return None
     try:
-        y, sr = librosa.load(path, sr=22050, mono=True)
+        duration = max_seconds if (max_seconds and max_seconds > 0) else None
+        y, sr = librosa.load(path, sr=22050, mono=True, duration=duration)
         if y.size == 0:
             return None
         tempo = librosa.beat.beat_track(y=y, sr=sr)[0]

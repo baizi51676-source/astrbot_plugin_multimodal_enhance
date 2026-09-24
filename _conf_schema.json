@@ -135,6 +135,60 @@
     "default": "",
     "_special": "select_provider"
   },
+  "max_items_per_type": {
+    "description": "同类媒体最多解析数量",
+    "hint": "语音/音频、音乐链接、B站、视频、引用消息等每类最多解析的条数。",
+    "type": "int",
+    "default": 3
+  },
+  "audio_spectrum_always": {
+    "description": "总是输出频谱（含已转文本时）",
+    "hint": "开启后，音频即使成功转文本也会附带频谱文本；关闭则仅在未获得转写时输出。",
+    "type": "bool",
+    "default": false
+  },
+  "audio_stt_max_chunks": {
+    "description": "长音频最多拆分转写段数",
+    "hint": "配合「STT 单段上限」使用；超过后仅转写前若干段并提示。",
+    "type": "int",
+    "default": 12
+  },
+  "audio_deep_max_seconds": {
+    "description": "深度分析最长秒数",
+    "hint": "0 = 不限制；默认仅分析前 300 秒，避免超长音频占用资源。",
+    "type": "int",
+    "default": 300
+  },
+  "video_caption_concurrency": {
+    "description": "逐帧描述并发数",
+    "hint": "并发调用图转文模型描述各帧；过大可能触发模型限流。",
+    "type": "int",
+    "default": 3
+  },
+  "model_attach_audio": {
+    "description": "主模型支持音频时改为附件直传",
+    "hint": "检测到聊天主模型支持音频输入（modalities 含 audio）时，语音/音频/音乐不再转文本，而是直接作为音频附件随消息发送给模型。",
+    "type": "bool",
+    "default": true
+  },
+  "model_attach_frames": {
+    "description": "主模型支持图片时抽帧直传",
+    "hint": "检测到聊天主模型支持图片输入（modalities 含 image）时，视频抽帧作为图片附件直传，不再逐帧转文字描述。",
+    "type": "bool",
+    "default": true
+  },
+  "attach_when_unset": {
+    "description": "主模型未声明 modalities 时按支持处理",
+    "hint": "默认关闭（保守）。仅在确认主模型支持音频/图片输入时可开启。",
+    "type": "bool",
+    "default": false
+  },
+  "attach_audio_max_mb": {
+    "description": "音频附件体积上限（MB）",
+    "hint": "超过该体积的音频不做附件直传，自动回退为文本解析。",
+    "type": "int",
+    "default": 20
+  },
   "env_ffmpeg_path": {
     "description": "FFmpeg 路径（环境配置）",
     "hint": "留空 = 自动查找 PATH 中的 ffmpeg。",

@@ -10,3 +10,6 @@ data/
 .vscode/
 tmp/
 tests/tmp/
+
+# 工作区备份目录（工具生成，忽略）
+.backup/

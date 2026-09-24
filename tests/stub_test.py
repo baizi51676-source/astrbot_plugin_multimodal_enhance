@@ -241,6 +241,55 @@ def test_native_stt_control() -> None:
     check("音频功能关闭 → 不截断", stage.stt_settings.get("enable") is True)
 
 
+def test_attach_flags() -> None:
+    print("- 主模型能力检测（附件直传）")
+    from core.capabilities import attach_flags, provider_modalities
+
+    class FakeProvider:
+        def __init__(self, mods):
+            self.provider_config = {"modalities": mods}
+
+    flags = attach_flags(["text", "image", "audio"], audio_on=True, frames_on=True)
+    check("音频/图片均支持", flags == {"audio": True, "image": True})
+    flags2 = attach_flags(["text", "image"], audio_on=True, frames_on=True)
+    check("仅图片支持", flags2 == {"audio": False, "image": True})
+    flags3 = attach_flags(["text", "audio"], audio_on=False, frames_on=True)
+    check("开关关闭后不直传", flags3 == {"audio": False, "image": False})
+    check("未声明 modalities 返回 None", provider_modalities(FakeProvider(None)) is None)
+    check("未声明但按支持处理",
+          provider_modalities(FakeProvider([]), True) == ["text", "image", "audio"])
+    check("声明读取（大小写归一）",
+          provider_modalities(FakeProvider(["text", "Image"])) == ["text", "image"])
+
+
+def test_attachment_flow() -> None:
+    print("- 附件直传（登记与注入）")
+    pipeline = _make_pipeline()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "a.wav")
+        with open(path, "wb") as fp:
+            fp.write(b"x" * 100)
+        attach = {"audio": True, "image": False, "max_bytes": 10 ** 6, "files": []}
+        check("登记音频附件", pipeline._collect_audio_attachment(attach, path, "t") is True)
+        check("附件列表非空", len(attach["files"]) == 1)
+        attach2 = {"audio": True, "image": False, "max_bytes": 10, "files": []}
+        check("超过体积上限不登记",
+              pipeline._collect_audio_attachment(attach2, path, "t") is False)
+        attach3 = {"audio": False, "image": True, "max_bytes": 10 ** 6, "files": []}
+        check("图片模式登记抽帧",
+              pipeline._collect_frames(attach3, [{"path": path}]) is True)
+
+        class Req:
+            audio_urls = []
+            image_urls = []
+
+        req = Req()
+        ok = pipeline._append_attachments(req, [path], [])
+        check("写入 req.audio_urls", ok and req.audio_urls == [path])
+        ok2 = pipeline._append_attachments(req, [path], [])
+        check("重复路径去重", ok2 is False)
+
+
 # ---------------- 环境管理 ----------------
 
 def test_env_manager() -> None:
@@ -421,6 +470,8 @@ def main() -> None:
     test_bilibili_parse()
     test_voice_fallback()
     test_native_stt_control()
+    test_attach_flags()
+    test_attachment_flow()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     if FAIL:
         sys.exit(1)
