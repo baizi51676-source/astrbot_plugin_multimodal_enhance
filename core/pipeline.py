@@ -398,8 +398,8 @@ class MediaPipeline:
             if det.reply_probe_ids:
                 try:
                     await self._probe_reply_voices(event, det, settings)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self.plugin.log.warn(f"引用语音探测失败：{exc}")
             if det.empty:
                 return
             key = self._key(event)
@@ -415,14 +415,14 @@ class MediaPipeline:
                     platform_name = ""
                     try:
                         platform_name = str(event.get_platform_name() or "")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self.plugin.log.debug(f"获取平台名称失败：{exc}")
                     persona_prompt = ""
                     try:
                         persona_prompt = await self.plugin.persona_prompt_for(
                             self._umo(event), platform_name)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self.plugin.log.warn(f"获取人格提示词失败（将使用默认）：{exc}")
                     notice = await llm_utils.generate_notice(
                         self.plugin.context, self._umo(event),
                         _sget_str(settings, "notice_provider", ""),
@@ -432,8 +432,8 @@ class MediaPipeline:
                     # 重要：不能用 event.send()——它会把 _has_send_oper 置 True，
                     # 导致 AstrBot 的 process_stage 判定「已有发送操作」而跳过 LLM 回复。
                     await self._send_proactive(event, notice)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self.plugin.log.warn(f"分析中提示发送失败：{exc}")
             self.plugin.log.info(f"检测到媒体内容，开始解析：{key}")
             self._tasks[key] = asyncio.create_task(
                 self._run(event, det, flags, settings, workdir, key)
@@ -490,7 +490,7 @@ class MediaPipeline:
                                       "ts": time.time(), "attachments": atts}
                 if text:
                     try:
-                        setattr(event, "_mme_analysis", text)
+                        event._mme_analysis = text
                     except Exception:
                         pass
                 extra = f"，附件 {len(atts)} 个" if atts else ""

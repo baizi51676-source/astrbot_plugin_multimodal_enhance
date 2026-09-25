@@ -91,7 +91,7 @@ def spectrum_segments(pcm: bytes, sr: int, seg_sec: float) -> list[dict]:
         freqs = np.fft.rfftfreq(len(chunk), 1.0 / sr)
         total = float(spec.sum()) + 1e-9
         bands = []
-        for idx, (lo, hi) in enumerate(BANDS):
+        for _idx, (lo, hi) in enumerate(BANDS):
             m = (freqs >= lo) & (freqs < hi)
             bands.append(round(float(spec[m].sum()) / total * 100.0, 1))
         centroid = float((spec * freqs).sum() / (float(spec.sum()) + 1e-9))
@@ -108,11 +108,11 @@ def spectrum_text(segments: list[dict], max_lines: int = 150) -> str:
     if not segments:
         return ""
     lines = ["图例：" + "、".join(
-        f"{label}({lo}-{hi}Hz)" for label, (lo, hi) in zip(BAND_LABELS, BANDS)
+        f"{label}({lo}-{hi}Hz)" for label, (lo, hi) in zip(BAND_LABELS, BANDS, strict=False)
     )]
     for seg in segments[:max_lines]:
         bands = " ".join(
-            f"{label}{value}%" for label, value in zip(BAND_LABELS, seg["bands"])
+            f"{label}{value}%" for label, value in zip(BAND_LABELS, seg["bands"], strict=False)
         )
         lines.append(f"{seg['t']:.0f}s 质心{seg['centroid_hz']}Hz | {bands}")
     if len(segments) > max_lines:

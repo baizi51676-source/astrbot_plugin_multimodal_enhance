@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 
-from .downloader import download_url, http_get_final_url, http_get_json
+from .downloader import download_url, http_get_final_url, http_get_json, looks_audio
 
 NCM_HEADERS = {"Referer": "https://music.163.com/", "Origin": "https://music.163.com"}
 
@@ -99,27 +99,16 @@ async def download_song(song_id: str, dest_dir: str, cookie: str = "",
         f"https://music.163.com/song/media/outer/url?id={song_id}.mp3",
         dest, max_bytes, headers=headers,
     )
-    if ok and _looks_audio(dest):
+    if ok and looks_audio(dest):
         return dest
 
     # 回退：官方播放接口（部分资源需要 cookie）
     url = await fetch_song_url_api(song_id, cookie)
     if url:
         ok, _ = await download_url(url, dest, max_bytes, headers=headers)
-        if ok and _looks_audio(dest):
+        if ok and looks_audio(dest):
             return dest
     return None
-
-
-def _looks_audio(path: str) -> bool:
-    try:
-        if os.path.getsize(path) < 50 * 1024:
-            return False
-        with open(path, "rb") as fp:
-            head = fp.read(4)
-        return head[:3] == b"ID3" or head[0] == 0xFF or head[:4] == b"fLaC"
-    except Exception:
-        return False
 
 
 def format_duration(duration_ms) -> str:

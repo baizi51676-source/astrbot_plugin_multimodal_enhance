@@ -38,7 +38,7 @@ except Exception:  # pragma: no cover - 旧版 AstrBot 无插件页面 API
     _WEB_AVAILABLE = False
 
 PLUGIN_NAME = "astrbot_plugin_multimodal_enhance"
-PLUGIN_VERSION = "v0.1.9"
+PLUGIN_VERSION = "0.1.10"
 
 # 插件页面配置表（也用于保存时的类型校验）
 _CONFIG_META = [
@@ -165,11 +165,11 @@ class Main(Star):
         keys = ("image_enabled", "audio_enabled", "video_enabled", "notice_enabled")
         try:
             if not self.conf.is_globally_enabled():
-                return {k: False for k in keys}
+                return dict.fromkeys(keys, False)
             return self.conf.resolve_feature_flags(
                 self._platform_id(event), self._self_id(event), self._umo(event))
         except Exception:
-            return {k: False for k in keys}
+            return dict.fromkeys(keys, False)
 
     @staticmethod
     def _umo(event) -> str:
@@ -209,13 +209,13 @@ class Main(Star):
     async def on_astrbot_loaded(self):
         try:
             caption_patch.install(self)
-        except Exception:
-            pass
+        except Exception as exc:
+            self.log.warn(f"图片增强补丁安装失败：{exc}")
         try:
             if getattr(self, "_native_stt", None) is not None:
                 self._native_stt.install(self)
-        except Exception:
-            pass
+        except Exception as exc:
+            self.log.warn(f"原生语音识别接管安装失败：{exc}")
         self.log.info(
             "AstrBot 已加载。图片增强补丁：" + ("已安装" if caption_patch.installed() else "未安装"))
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import glob
 import json
 import os
-import time
 
 try:
     import aiohttp
@@ -16,12 +15,6 @@ from .ffmpeg_tools import run_proc
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
-
-
-def _session():
-    if aiohttp is None:
-        return None
-    return aiohttp.ClientSession(headers={"User-Agent": UA})
 
 
 async def http_get_json(url: str, headers: dict | None = None,
@@ -83,8 +76,11 @@ async def download_url(url: str, dest: str, max_bytes: int,
         return False, f"下载失败：{exc}"
 
 
-def _file_looks_audio(path: str) -> bool:
-    """粗略校验下载物像音频文件（防止把 403 页面存成文件）。"""
+def looks_audio(path: str) -> bool:
+    """粗略校验下载物像音频文件（防止把错误页面存成文件）。
+
+    支持 ID3 / MP3 帧头 / FLAC / OggS；体积小于 50KB 直接判为可疑。
+    """
     try:
         if os.path.getsize(path) < 50 * 1024:
             return False

@@ -118,7 +118,7 @@ def install(plugin: Any) -> bool:
 
     patched = _replace_refs(original, wrapper)
     try:
-        setattr(mod, "_ensure_img_caption", wrapper)
+        mod._ensure_img_caption = wrapper
     except Exception:
         pass
 
@@ -139,7 +139,7 @@ def uninstall(plugin: Any | None = None) -> None:
     if mod is not None:
         try:
             if getattr(mod, "_ensure_img_caption", None) is _wrapper:
-                setattr(mod, "_ensure_img_caption", _original_ensure)
+                mod._ensure_img_caption = _original_ensure
         except Exception:
             pass
     _installed = False
