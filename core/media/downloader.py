@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import glob
 import json
 import os
@@ -22,7 +23,11 @@ async def http_get_json(url: str, headers: dict | None = None,
     if aiohttp is None:
         return None
     try:
-        async with aiohttp.ClientSession(headers={"User-Agent": UA, **(headers or {})}) as session:
+        async with aiohttp.ClientSession(headers={
+            "User-Agent": UA,
+            "Accept": "application/json, text/plain, */*",
+            **(headers or {}),
+        }) as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
                 if resp.status >= 400:
                     return None
@@ -72,7 +77,19 @@ async def download_url(url: str, dest: str, max_bytes: int,
                             return False, "超过大小上限，已中止"
                         fp.write(chunk)
         return True, f"{written} bytes"
+    except asyncio.CancelledError:
+        try:
+            if os.path.exists(dest):
+                os.remove(dest)
+        except OSError:
+            pass
+        raise
     except Exception as exc:
+        try:
+            if os.path.exists(dest):
+                os.remove(dest)
+        except OSError:
+            pass
         return False, f"下载失败：{exc}"
 
 

@@ -60,11 +60,37 @@ def test_logger() -> None:
     from core.logger import PluginLogger
     log = PluginLogger("test", max_lines=50)
     log.info("hello")
+    log.debug("detail")
     log.error("boom")
     tail = log.tail(10)
     check("seq 递增", tail[-1]["seq"] > tail[0]["seq"])
+    check("debug 可用", any(e["level"] == "DEBUG" for e in tail))
     check("recent_errors 过滤", log.recent_errors(5)[-1]["msg"] == "boom")
     check("export_text 可导出", "boom" in log.export_text(10))
+
+    class FakeForward:
+        def __init__(self):
+            self.records = []
+
+        def info(self, msg):
+            self.records.append(("info", msg))
+
+        def warning(self, msg):
+            self.records.append(("warning", msg))
+
+        def error(self, msg):
+            self.records.append(("error", msg))
+
+        def debug(self, msg):
+            self.records.append(("debug", msg))
+
+    fake = FakeForward()
+    log2 = PluginLogger("test2", max_lines=20, forward=fake)
+    log2.info("hello-official")
+    log2.warn("warn-official")
+    check("转发到官方 logger",
+          ("info", "hello-official") in fake.records
+          and ("warning", "warn-official") in fake.records)
 
 
 # ---------------- 图片增强提示词 ----------------
@@ -154,15 +180,73 @@ def test_wake_gate() -> None:
 
 def test_bilibili_parse() -> None:
     print("- B站链接解析")
-    from core.media.bilibili import parse_bili_id
+    from core.media.bilibili import parse_bili_id, _clean_title, _parse_duration
     check("BV 号提取",
           parse_bili_id("https://www.bilibili.com/video/BV1xx411c7mD?p=1") == ("bvid", "BV1xx411c7mD"))
     check("av 号提取",
           parse_bili_id("https://www.bilibili.com/video/av12345") == ("aid", "12345"))
     check("纯 BV 串提取", parse_bili_id("看看 BV1GJ411x7h7 这个") == ("bvid", "BV1GJ411x7h7"))
     check("短链本地不解（返回 None）", parse_bili_id("https://b23.tv/abc123") is None)
+    check("时长 5:52", _parse_duration("5:52") == 352)
+    check("时长 1:02:03", _parse_duration("1:02:03") == 3723)
+    check("标题去 HTML", _clean_title("<em class=\"keyword\">某视频</em>") == "某视频")
     from core.config import DEFAULTS
     check("分析中提示词默认值", "正在理解" in str(DEFAULTS.get("notice_prompt", "")))
+
+
+def test_bilibili_fallback() -> None:
+    print("- B站 view 被风控时的兜底链")
+    from core.media import bilibili
+
+    async def fake_view(key, value):
+        return None
+
+    async def fake_search(key, value):
+        return {"bvid": "BV1xx411c7mD", "aid": 123, "title": "<em>标题</em>",
+                "author": "UP主", "pubdate": 100, "duration": "5:52",
+                "description": "搜索简介", "pic": "//x/y.jpg"}
+
+    async def fake_page(key, value):
+        return {"cid": 456, "duration": 352, "part": "分P标题", "ctime": 99}
+
+    async def fake_desc(key, value):
+        return "完整简介"
+
+    originals = (bilibili._fetch_view, bilibili._fetch_search,
+                 bilibili._fetch_pagelist, bilibili._fetch_desc)
+    bilibili._fetch_view = fake_view
+    bilibili._fetch_search = fake_search
+    bilibili._fetch_pagelist = fake_page
+    bilibili._fetch_desc = fake_desc
+    try:
+        info = asyncio.run(bilibili.fetch_video_info(
+            "https://www.bilibili.com/video/BV1xx411c7mD"))
+    finally:
+        (bilibili._fetch_view, bilibili._fetch_search,
+         bilibili._fetch_pagelist, bilibili._fetch_desc) = originals
+    check("兜底返回元数据", bool(info))
+    if info:
+        check("兜底 cid", info.get("cid") == 456)
+        check("兜底标题去 HTML", info.get("title") == "标题")
+        check("兜底 UP 主", info.get("owner") == "UP主")
+        check("兜底时长", info.get("duration") == 352)
+        check("兜底简介优先 desc 接口", info.get("desc") == "完整简介")
+
+
+def test_forget_task() -> None:
+    print("- 任务表清理（无结果时移除）")
+    pipeline = _make_pipeline()
+    pipeline._tasks["no-result"] = object()
+    pipeline._results.pop("no-result", None)
+    pipeline._forget_task("no-result")
+    check("无结果任务被移除", "no-result" not in pipeline._tasks)
+
+    pipeline._tasks["has-result"] = object()
+    pipeline._results["has-result"] = {"text": "x", "workdir": "", "ts": 0}
+    pipeline._forget_task("has-result")
+    check("有结果任务保留到注入清理", "has-result" in pipeline._tasks)
+    pipeline._cleanup_key("has-result")
+    check("注入后任务被清理", "has-result" not in pipeline._tasks)
 
 
 def test_voice_fallback() -> None:
@@ -378,6 +462,16 @@ def _make_event(comps, text=""):
     return event
 
 
+def test_logger_compliance() -> None:
+    print("- 日志规范（astrbot.api.logger）")
+    main_src = pathlib.Path(ROOT, "main.py").read_text(encoding="utf-8")
+    logger_src = pathlib.Path(ROOT, "core", "logger.py").read_text(encoding="utf-8")
+    check("main 导入官方 logger", "from astrbot.api import AstrBotConfig, logger" in main_src)
+    check("main 使用官方 logger", "forward=logger" in main_src and "logger.debug(" in main_src)
+    check("core/logger 导入官方 logger", "from astrbot.api import logger" in logger_src)
+    check("core/logger 转发官方 logger", "_forward" in logger_src and "getattr(self._forward" in logger_src)
+
+
 def test_pipeline_detect() -> None:
     print("- 管线检测（含引用消息）")
     pipeline = _make_pipeline()
@@ -430,6 +524,12 @@ def test_pipeline_detect() -> None:
     det9 = pipeline.detect(_make_event([Reply(id="8", chain=[card])]), flags, {})
     check("识别引用链中的卡片", len(det9.music_refs) == 1 and det9.music_refs[0][1] is True)
 
+    # 10) 直链音频不再依赖 video_enabled
+    det10 = pipeline.detect(
+        _make_event([], text="听听 https://x.test/a.mp3"),
+        {"audio_enabled": True, "video_enabled": False}, {})
+    check("视频关闭时仍识别音频直链", len(det10.direct_audio_urls) == 1)
+
 
 def test_resolve_value() -> None:
     print("- 媒体落地（base64:// / file:// / data:）")
@@ -459,6 +559,7 @@ def main() -> None:
     print("== 多模态理解增强 · 离线自测 ==")
     test_config()
     test_logger()
+    test_logger_compliance()
     test_prompt()
     test_ncm_links()
     test_spectrum()
@@ -468,6 +569,8 @@ def main() -> None:
     test_split_wav()
     test_wake_gate()
     test_bilibili_parse()
+    test_bilibili_fallback()
+    test_forget_task()
     test_voice_fallback()
     test_native_stt_control()
     test_attach_flags()

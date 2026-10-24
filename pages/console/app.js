@@ -5,6 +5,7 @@ const $ = (sel) => document.querySelector(sel);
 let providerOptions = [];
 let configMeta = [];
 let globalConfig = {};
+let secretsSet = {};
 let botsList = [];
 let overviewData = null;
 let workspace = { configTab: "default", botDraft: null };
@@ -127,6 +128,7 @@ async function loadConfig() {
     ]);
     configMeta = cfg.meta || [];
     globalConfig = cfg.config || {};
+    secretsSet = cfg.secrets_set || {};
     botsList = cfg.bots || [];
     providerOptions = prov.providers || [];
     if (workspace.configTab !== "default" &&
@@ -171,6 +173,10 @@ function controlHtml(item, value, disabled, id) {
   }
   if (item.type === "int") {
     return `<input type="number" id="${id}" value="${Number(value ?? 0)}"${dis}/>`;
+  }
+  if (item.type === "secret") {
+    const placeholder = secretsSet[item.key] ? "已设置，留空保持不变" : "未设置";
+    return `<input type="password" id="${id}" value="" placeholder="${placeholder}" autocomplete="new-password"${dis}/>`;
   }
   if (item.type === "select" || item.type === "provider") {
     let options;

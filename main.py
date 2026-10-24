@@ -14,9 +14,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 
-from astrbot.api import AstrBotConfig
+from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
 
@@ -38,7 +39,7 @@ except Exception:  # pragma: no cover - 旧版 AstrBot 无插件页面 API
     _WEB_AVAILABLE = False
 
 PLUGIN_NAME = "astrbot_plugin_multimodal_enhance"
-PLUGIN_VERSION = "0.1.10"
+PLUGIN_VERSION = "0.1.11"
 
 # 插件页面配置表（也用于保存时的类型校验）
 _CONFIG_META = [
@@ -62,7 +63,8 @@ _CONFIG_META = [
     {"key": "audio_links_enabled", "group": "音频理解", "label": "音乐链接解析",
      "type": "bool", "hint": "目前支持网易云音乐链接。"},
     {"key": "audio_ncm_cookie", "group": "音频理解", "label": "网易云 Cookie（可选）",
-     "type": "string"},
+     "type": "secret", "scope": "system",
+     "hint": "格式如 MUSIC_U=...；留空表示保持不变（不会清空已保存的值）。"},
     {"key": "audio_deep_mode", "group": "音频理解", "label": "声纹包式深度分析",
      "type": "select", "options": [
          {"value": "auto", "label": "自动（检测到 librosa 时启用）"},
@@ -137,7 +139,12 @@ class Main(Star):
         except Exception:
             self.data_dir = os.path.join(os.getcwd(), "data", "plugin_data", PLUGIN_NAME)
         os.makedirs(self.data_dir, exist_ok=True)
-        self.log = PluginLogger(PLUGIN_NAME, max_lines=self.conf.int("log_max_lines", 2000))
+        self.log = PluginLogger(PLUGIN_NAME, max_lines=self.conf.int("log_max_lines", 2000),
+                               forward=logger)
+        try:
+            logger.debug(f"[{PLUGIN_NAME}] 初始化，版本 {PLUGIN_VERSION}")
+        except Exception:
+            pass
         self.log.configure(
             self.conf.bool("log_enabled", True),
             os.path.join(self.data_dir, "logs", "plugin.log"),
@@ -280,7 +287,20 @@ class Main(Star):
             self.log.warn(f"注册页面 API 失败：{exc}")
 
     def _public_config(self) -> dict:
-        return {item["key"]: self.conf.get(item["key"]) for item in _CONFIG_META}
+        result: dict = {}
+        for item in _CONFIG_META:
+            value = self.conf.get(item["key"])
+            if item["type"] == "secret":
+                value = ""
+            result[item["key"]] = value
+        return result
+
+    def _secrets_state(self) -> dict:
+        return {
+            item["key"]: bool(str(self.conf.get(item["key"]) or "").strip())
+            for item in _CONFIG_META
+            if item["type"] == "secret"
+        }
 
     def caption_provider_id(self) -> str:
         """AstrBot 全局「图片描述」模型 ID（视频帧描述等复用）。"""
@@ -379,7 +399,8 @@ class Main(Star):
 
     async def _api_config_get(self):
         return json_response({"config": self._public_config(), "meta": _CONFIG_META,
-                              "bots": self._bots_overview()})
+                              "bots": self._bots_overview(),
+                              "secrets_set": self._secrets_state()})
 
     async def _api_config_save(self):
         payload = await request.json(default={})
@@ -395,6 +416,10 @@ class Main(Star):
                 cleaned[key] = _to_bool(value, False)
             elif kind == "int":
                 cleaned[key] = _to_int(value, DEFAULTS.get(key, 0))
+            elif kind == "secret":
+                text = "" if value is None else str(value).strip()
+                if text:
+                    cleaned[key] = text
             elif kind == "json":
                 if not isinstance(value, list):
                     return error_response(f"{key} 需要 JSON 列表", status_code=400)
@@ -426,7 +451,8 @@ class Main(Star):
             self.conf.int("log_max_lines", 2000),
         )
         self.log.info("配置已更新" + ("并保存。" if saved else "（保存失败，仅本次生效）。"))
-        return json_response({"saved": saved, "config": self._public_config()})
+        return json_response({"saved": saved, "config": self._public_config(),
+                              "secrets_set": self._secrets_state()})
 
     async def _api_providers(self):
         providers = []
@@ -587,7 +613,17 @@ class Main(Star):
         if mode == "one_click" or not isinstance(packages, list) or not packages:
             ok, message = env_manager.start_one_click(index)
         else:
-            ok, message = env_manager.start_install([str(p) for p in packages], index)
+            clean: list[str] = []
+            for item in packages:
+                text = str(item).strip()
+                if not text or text.startswith("-"):
+                    continue
+                if not re.fullmatch(r"[A-Za-z0-9_.\-\[\]=<>!~,+]+", text):
+                    continue
+                clean.append(text)
+            if not clean:
+                return error_response("包名无效", status_code=400)
+            ok, message = env_manager.start_install(clean, index)
         return json_response({"started": ok, "message": message})
 
     async def _api_env_install_status(self):

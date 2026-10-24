@@ -180,17 +180,16 @@ class MediaPipeline:
                     url = match if match.startswith("http") else f"https://{match}"
                     if all(existing[0] != url for existing in det.bili_urls):
                         det.bili_urls.append((url, quoted))
-            if video_on:
-                for url in DIRECT_MEDIA_PATTERN.findall(text):
-                    if ncm.SONG_URL_PATTERN.search(url):
-                        continue
-                    ext = os.path.splitext(url.split("?")[0])[1].lower()
-                    if ext in AUDIO_EXTS and links_on:
-                        if url not in det.direct_audio_urls:
-                            det.direct_audio_urls.append(url)
-                    elif ext in VIDEO_EXTS:
-                        if url not in det.direct_video_urls:
-                            det.direct_video_urls.append(url)
+            for url in DIRECT_MEDIA_PATTERN.findall(text):
+                if ncm.SONG_URL_PATTERN.search(url):
+                    continue
+                ext = os.path.splitext(url.split("?")[0])[1].lower()
+                if ext in AUDIO_EXTS:
+                    if audio_on and url not in det.direct_audio_urls:
+                        det.direct_audio_urls.append(url)
+                elif ext in VIDEO_EXTS:
+                    if video_on and url not in det.direct_video_urls:
+                        det.direct_video_urls.append(url)
 
         try:
             comps = list(getattr(event.message_obj, "message", []) or [])
@@ -435,9 +434,11 @@ class MediaPipeline:
                 except Exception as exc:
                     self.plugin.log.warn(f"分析中提示发送失败：{exc}")
             self.plugin.log.info(f"检测到媒体内容，开始解析：{key}")
-            self._tasks[key] = asyncio.create_task(
+            task = asyncio.create_task(
                 self._run(event, det, flags, settings, workdir, key)
             )
+            self._tasks[key] = task
+            task.add_done_callback(lambda done, k=key: self._forget_task(k))
         except Exception as exc:
             self.plugin.log.error(f"消息检测异常：{exc}")
 
@@ -1222,6 +1223,11 @@ class MediaPipeline:
                 except Exception as exc:
                     self.plugin.log.warn(f"图片附件附加失败：{exc}")
         return attached
+
+    def _forget_task(self, key: str) -> None:
+        """任务结束且没有可注入结果时立刻移除，避免 _tasks 无界增长。"""
+        if key not in self._results:
+            self._tasks.pop(key, None)
 
     def _cleanup_key(self, key: str) -> None:
         result = self._results.pop(key, None)

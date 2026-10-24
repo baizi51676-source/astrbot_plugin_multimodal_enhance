@@ -113,7 +113,7 @@ main { padding: 16px 20px 40px; }
 .field { margin-bottom: 14px; }
 .field label { display: block; font-weight: 600; margin-bottom: 4px; }
 .field .fhint { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
-.field input[type="text"], .field input[type="number"], .field select, .field textarea {
+.field input[type="text"], .field input[type="number"], .field input[type="password"], .field select, .field textarea {
   width: 100%; padding: 8px 10px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--bg); color: var(--text);
 }

@@ -1,6 +1,6 @@
 """B站解析：官方 API 直连（绕开 yt-dlp 在部分服务器上的 412 风控）。
 
-- 元数据：/x/web-interface/view
+- 元数据：/x/web-interface/view；若被 -412 风控，回退到搜索 / 分P列表 / 简介接口
 - 播放地址：/x/player/playurl（低清 durl 直链 mp4，无需登录）
 - 下载时附带 Referer/UA，直链 CDN 可正常拉取。
 """
@@ -11,6 +11,7 @@ import os
 import re
 import time
 import uuid
+from urllib.parse import quote
 
 from .downloader import download_url, http_get_final_url, http_get_json
 
@@ -48,11 +49,47 @@ async def resolve_ref(url_or_text: str) -> tuple[str, str] | None:
 
 
 async def fetch_video_info(url_or_text: str) -> dict | None:
-    """获取视频元数据（标题/简介/时长/UP主/发布时间/cid）。失败返回 None。"""
+    """获取视频元数据（标题/简介/时长/UP主/发布时间/cid）。
+
+    优先官方 view 接口；若被风控（-412）则依次回退到搜索、分P列表与简介接口，
+    尽量在数据中心 IP 上也能拿到可用信息。
+    """
     ref = await resolve_ref(url_or_text)
     if not ref:
         return None
     key, value = ref
+
+    info = await _fetch_view(key, value)
+    if info:
+        return info
+
+    # 回退通道：view 被风控时仍可用的接口
+    item = await _fetch_search(key, value)
+    page = await _fetch_pagelist(key, value)
+    desc = await _fetch_desc(key, value)
+    if not any([item, page, desc]):
+        return None
+
+    item = item or {}
+    page = page or {}
+    bvid = str(item.get("bvid") or (value if key == "bvid" else "") or "")
+    aid = item.get("aid") or (int(value) if key == "aid" else None)
+    duration = page.get("duration") or _parse_duration(item.get("duration"))
+    title = _clean_title(item.get("title") or page.get("part") or "")
+    return {
+        "bvid": bvid,
+        "aid": aid,
+        "cid": page.get("cid"),
+        "title": title,
+        "desc": str(desc or item.get("description") or "")[:800],
+        "pubdate": item.get("pubdate") or page.get("ctime"),
+        "duration": duration,
+        "owner": str(item.get("author") or ""),
+        "cover": str(item.get("pic") or ""),
+    }
+
+
+async def _fetch_view(key: str, value: str) -> dict | None:
     api = (f"https://api.bilibili.com/x/web-interface/view?"
            f"{'bvid' if key == 'bvid' else 'aid'}={value}")
     data = await http_get_json(api, headers=BILI_HEADERS)
@@ -73,16 +110,82 @@ async def fetch_video_info(url_or_text: str) -> dict | None:
         "pubdate": d.get("pubdate"),
         "duration": d.get("duration"),
         "owner": str((d.get("owner") or {}).get("name") or ""),
+        "cover": str(d.get("pic") or ""),
     }
+
+
+async def _fetch_search(key: str, value: str) -> dict | None:
+    """搜索接口：数据中心 IP 上通常未被 view 的 -412 风控覆盖。"""
+    keyword = value if key == "bvid" else f"av{value}"
+    url = ("https://api.bilibili.com/x/web-interface/search/type?"
+           f"search_type=video&keyword={quote(keyword)}")
+    data = await http_get_json(url, headers=BILI_HEADERS)
+    if not isinstance(data, dict) or data.get("code") != 0:
+        return None
+    result = (data.get("data") or {}).get("result") or []
+    for item in result:
+        if not isinstance(item, dict):
+            continue
+        if key == "bvid" and str(item.get("bvid") or "") == value:
+            return item
+        if key == "aid" and str(item.get("aid") or "") == value:
+            return item
+    return result[0] if result and isinstance(result[0], dict) else None
+
+
+async def _fetch_pagelist(key: str, value: str) -> dict | None:
+    url = (f"https://api.bilibili.com/x/player/pagelist?"
+           f"{'bvid' if key == 'bvid' else 'aid'}={value}")
+    data = await http_get_json(url, headers=BILI_HEADERS)
+    if not isinstance(data, dict) or data.get("code") != 0:
+        return None
+    pages = data.get("data") or []
+    return pages[0] if pages and isinstance(pages[0], dict) else None
+
+
+async def _fetch_desc(key: str, value: str) -> str:
+    url = (f"https://api.bilibili.com/x/web-interface/archive/desc?"
+           f"{'bvid' if key == 'bvid' else 'aid'}={value}")
+    data = await http_get_json(url, headers=BILI_HEADERS)
+    if not isinstance(data, dict) or data.get("code") != 0:
+        return ""
+    return str(data.get("data") or "")
+
+
+def _parse_duration(value) -> int:
+    """把搜索接口的 '5:52' / '1:02:03' 转为秒。"""
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    try:
+        parts = [int(p) for p in text.split(":")]
+    except ValueError:
+        return 0
+    total = 0
+    for part in parts:
+        total = total * 60 + part
+    return total
+
+
+def _clean_title(value) -> str:
+    return re.sub(r"<[^>]+>", "", str(value or "")).strip()
 
 
 async def fetch_play_url(info: dict, qn: int = 64) -> str | None:
     """获取可下载的直链（低清 durl，单文件含音轨）。"""
     if not info.get("cid"):
         return None
+    if info.get("bvid"):
+        id_part = f"bvid={info['bvid']}"
+    elif info.get("aid"):
+        id_part = f"avid={info['aid']}"
+    else:
+        return None
     for q in (qn, 32, 16):
         api = (f"https://api.bilibili.com/x/player/playurl?"
-               f"bvid={info.get('bvid')}&cid={info.get('cid')}"
+               f"{id_part}&cid={info.get('cid')}"
                f"&qn={q}&fnval=1&fnver=0&fourk=1")
         data = await http_get_json(api, headers=BILI_HEADERS)
         if not isinstance(data, dict) or data.get("code") != 0:
@@ -94,14 +197,16 @@ async def fetch_play_url(info: dict, qn: int = 64) -> str | None:
     return None
 
 
-async def download_video(info: dict, dest_dir: str, max_bytes: int) -> str | None:
+async def download_video(info: dict, dest_dir: str, max_bytes: int,
+                         timeout: float = 120) -> str | None:
     """下载视频（API 直链通道）。返回文件路径或 None。"""
     url = await fetch_play_url(info)
     if not url:
         return None
     os.makedirs(dest_dir, exist_ok=True)
     dest = os.path.join(dest_dir, f"bili_{info.get('bvid') or uuid.uuid4().hex[:6]}.mp4")
-    ok, _msg = await download_url(url, dest, max_bytes, headers=BILI_HEADERS)
+    ok, _msg = await download_url(
+        url, dest, max_bytes, headers=BILI_HEADERS, timeout=timeout)
     return dest if ok else None
 
 

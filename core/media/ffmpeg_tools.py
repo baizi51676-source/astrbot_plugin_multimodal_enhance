@@ -44,6 +44,13 @@ async def run_proc(cmd: list[str], timeout: float = 120) -> tuple[int, bytes, by
         except Exception:
             pass
         return -9, b"", b"timeout"
+    except asyncio.CancelledError:
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        raise
     return proc.returncode or 0, out, err
 
 
