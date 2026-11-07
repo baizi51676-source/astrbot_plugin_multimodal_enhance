@@ -1,0 +1,18 @@
+# 项目 lint 基线（与交接材料 checks/ruff-selected.txt 的 34 条一致）
+# 用法：ruff check .   （无需再手工指定 --select / --ignore）
+
+target-version = "py310"
+
+[lint]
+select = ["E", "W", "F", "B", "C4", "SIM", "RET", "PIE", "PERF", "RUF", "UP", "ASYNC"]
+ignore = [
+    "E501",   # 行长不作要求
+    "UP045", "UP035", "UP037",  # 保持 typing 写法与 3.10 兼容
+    "RUF001", "RUF002", "RUF003",  # 中文标点属正常
+    "RUF100",  # 允许保留说明性的 noqa
+    "PERF203",  # try 内循环是既有风格
+    "SIM105",  # 用 try/except/pass 表达「尽力而为」更直观
+    "SIM117",  # 多层 with 可读性更好
+    "UP041",   # 保留 asyncio.TimeoutError 别名写法
+    "ASYNC109",  # async 函数带 timeout 参数是本项目统一签名
+]
