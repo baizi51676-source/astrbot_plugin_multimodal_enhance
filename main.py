@@ -39,7 +39,7 @@ except Exception:  # pragma: no cover - 旧版 AstrBot 无插件页面 API
     _WEB_AVAILABLE = False
 
 PLUGIN_NAME = "astrbot_plugin_multimodal_enhance"
-PLUGIN_VERSION = "0.1.12"
+PLUGIN_VERSION = "0.1.13"
 
 # 插件页面配置表（也用于保存时的类型校验）
 _CONFIG_META = [
@@ -96,6 +96,10 @@ _CONFIG_META = [
     {"key": "audio_stt_max_chunks", "group": "音频理解", "label": "长音频最多拆分段数", "type": "int"},
     {"key": "audio_deep_max_seconds", "group": "音频理解", "label": "深度分析最长秒数", "type": "int",
      "hint": "0 = 不限制。"},
+    {"key": "audio_spectrum_max_seconds", "group": "音频理解", "label": "频谱分析最长秒数", "type": "int",
+     "hint": "只解码前 N 秒做频谱，避免长音频整段进内存；0 = 不限制。"},
+    {"key": "max_parallel_parses", "group": "基础", "label": "同时进行的媒体解析数量", "type": "int",
+     "hint": "超出上限的消息排队等待，避免突发消息同时启动多个 ffmpeg/语音转写任务。"},
     {"key": "model_attach_audio", "group": "附件直传", "label": "音频：主模型支持时直传附件", "type": "bool",
      "hint": "主模型支持音频输入时，语音/音频/音乐作为附件直发，不再转文本。"},
     {"key": "model_attach_frames", "group": "附件直传", "label": "视频抽帧：主模型支持图片时直传", "type": "bool",

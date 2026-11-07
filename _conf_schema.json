@@ -159,11 +159,23 @@
     "type": "int",
     "default": 300
   },
+  "audio_spectrum_max_seconds": {
+    "description": "频谱分析最长秒数",
+    "hint": "只解码前 N 秒做频谱，避免长音频整段进内存（1 小时音频约需 150MB 以上）。0 = 不限制。",
+    "type": "int",
+    "default": 300
+  },
   "video_caption_concurrency": {
     "description": "逐帧描述并发数",
     "hint": "并发调用图转文模型描述各帧；过大可能触发模型限流。",
     "type": "int",
     "default": 3
+  },
+  "max_parallel_parses": {
+    "description": "同时进行的媒体解析数量",
+    "hint": "超出上限的消息会排队等待，避免突发消息同时启动多个 ffmpeg/语音转写任务。",
+    "type": "int",
+    "default": 2
   },
   "model_attach_audio": {
     "description": "主模型支持音频时改为附件直传",

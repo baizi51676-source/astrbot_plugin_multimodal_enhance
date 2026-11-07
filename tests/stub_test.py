@@ -884,6 +884,131 @@ def test_music_attach_still_injects_meta() -> None:
          pipeline._spectrum_for) = orig
 
 
+def test_concurrency_gate() -> None:
+    print("- 全局解析并发闸门（排队语义）")
+    from core.config import PluginConfig
+    from core.pipeline import Detected
+
+    pipeline = _make_pipeline()
+    pipeline.plugin.conf = PluginConfig({"video_enabled": True, "max_parallel_parses": 2})
+
+    state = {"cur": 0, "peak": 0}
+
+    async def fake_analyze(*a, **k):
+        state["cur"] += 1
+        state["peak"] = max(state["peak"], state["cur"])
+        await asyncio.sleep(0.05)
+        state["cur"] -= 1
+        return []
+
+    pipeline._analyze = fake_analyze
+
+    async def run():
+        det = Detected()
+        det.direct_audio_urls = [("https://x/a.mp3", False)]
+        tasks = [asyncio.create_task(
+            pipeline._run(None, det, {}, {}, f"/tmp/mme_gate_{i}", f"k{i}"))
+            for i in range(6)]
+        await asyncio.gather(*tasks)
+
+    asyncio.run(run())
+    check("并发峰值不超过上限 2", state["peak"] <= 2)
+    check("6 条消息全部执行完", state["cur"] == 0 and state["peak"] >= 1)
+
+    # 配置变化时闸门重建
+    pipeline.plugin.conf = PluginConfig({"video_enabled": True, "max_parallel_parses": 4})
+    gate = pipeline._gate()
+    check("配置变化后闸门重建", pipeline._sem_size == 4 and gate is pipeline._sem)
+
+
+def test_spectrum_limit() -> None:
+    print("- 频谱时长上限")
+    import core.pipeline as pl
+    pipeline = _make_pipeline()
+    captured = {}
+
+    async def fake_decode(path, sr=22050, ffmpeg="ffmpeg", max_seconds=0):
+        captured["max_seconds"] = max_seconds
+        # 造 12 秒非静音 PCM（正弦波），保证能切出多个频谱段
+        import math as _m
+        import array
+        n = sr * 12
+        buf = array.array("h", (int(_m.sin(2 * _m.pi * 440 * i / sr) * 8000)
+                                for i in range(n)))
+        return buf.tobytes()
+
+    orig = pl.decode_pcm
+    pl.decode_pcm = fake_decode
+    try:
+        text = asyncio.run(pipeline._spectrum_for(
+            "x.mp3", "ffmpeg", {"audio_spectrum_enabled": True,
+                                "audio_spectrum_max_seconds": 300}))
+        check("向 decode_pcm 传入时长上限", captured.get("max_seconds") == 300)
+        check("文本标注仅分析前 N 秒", "仅分析前 300 秒" in text)
+
+        text2 = asyncio.run(pipeline._spectrum_for(
+            "x.mp3", "ffmpeg", {"audio_spectrum_enabled": True,
+                                "audio_spectrum_max_seconds": 0}))
+        check("上限 0 时不加标注", "仅分析前" not in text2)
+        check("上限 0 时传 0（表示不限制）", captured.get("max_seconds") == 0)
+    finally:
+        pl.decode_pcm = orig
+
+
+def test_stt_chunk_parallel() -> None:
+    print("- 分块转写并发与顺序")
+    pipeline = _make_pipeline()
+
+    order = {"active": 0, "peak": 0}
+
+    class FakeSTT:
+        async def get_text(self, path):
+            order["active"] += 1
+            order["peak"] = max(order["peak"], order["active"])
+            idx = int(os.path.basename(path).split("part")[-1].split(".")[0])
+            # 靠后的段先返回，验证拼接仍按段号
+            await asyncio.sleep(0.05 * (4 - idx))
+            order["active"] -= 1
+            return f"段{idx}"
+
+    class Ctx:
+        async def get_using_stt_provider_async(self, umo):
+            return FakeSTT()
+
+    pipeline.plugin.context = Ctx()
+
+    import core.media.audio_analyzer as aa
+    orig_split = aa.split_wav
+    aa.split_wav = lambda p, mb, wd: [f"{wd}/x_part{i}.wav" for i in range(3)]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "long.wav")
+            with open(src, "wb") as fp:  # noqa: ASYNC230 - 测试桩，同步写固定大小
+                fp.write(b"x" * (2 * 1024 * 1024))
+            text = asyncio.run(pipeline._transcribe("umo", src, {
+                "audio_stt_chunk_mb": 1, "audio_stt_max_chunks": 12}, "ffmpeg", tmp))
+        check("分块结果按段号顺序拼接", text == "段0段1段2")
+        check("分块转写并发执行（峰值>1）", order["peak"] > 1)
+        check("并发不超过上限 3", order["peak"] <= 3)
+    finally:
+        aa.split_wav = orig_split
+
+
+def test_config_clamp() -> None:
+    print("- 配置钳制")
+    from core.config import DEFAULTS, LIMITS, PluginConfig, clamp_value
+    check("超上限被钳制", clamp_value("video_frames", 9999) == 24)
+    check("低于下限被钳制", clamp_value("video_frames", 0) == 1)
+    check("非数值回退默认", clamp_value("video_frames", "abc") == 6)
+    check("非受限键原样返回", clamp_value("image_enabled", 1) == 1)
+    conf = PluginConfig({"video_frames": 9999, "max_parallel_parses": 99})
+    check("读取时钳制（video_frames）", conf.int("video_frames", 6) == 24)
+    check("读取时钳制（max_parallel_parses）", conf.int("max_parallel_parses", 2) == 8)
+    eff = conf.effective_with_overrides({"video_frames": 9999})
+    check("覆写值也钳制", eff["video_frames"] == 24)
+    check("LIMITS 键都在 DEFAULTS 中", all(k in DEFAULTS for k in LIMITS))
+
+
 def main() -> None:
     print("== 多模态理解增强 · 离线自测 ==")
     test_config()
@@ -909,6 +1034,10 @@ def main() -> None:
     test_native_stt_concurrency()
     test_install_lifecycle()
     test_music_attach_still_injects_meta()
+    test_concurrency_gate()
+    test_spectrum_limit()
+    test_stt_chunk_parallel()
+    test_config_clamp()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     if FAIL:
         sys.exit(1)

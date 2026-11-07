@@ -51,7 +51,9 @@ DEFAULTS: dict[str, Any] = {
     "audio_spectrum_always": False,
     "audio_stt_max_chunks": 12,
     "audio_deep_max_seconds": 300,
+    "audio_spectrum_max_seconds": 300,
     "video_caption_concurrency": 3,
+    "max_parallel_parses": 2,
     "model_attach_audio": True,
     "model_attach_frames": True,
     "attach_when_unset": False,
@@ -75,6 +77,37 @@ _LEGACY_KEYS = {
 }
 
 _FEATURE_KEYS = ("image_enabled", "audio_enabled", "video_enabled", "notice_enabled")
+
+# 数值键的合法范围（下限, 上限）；0 表示「不限制」的键单独处理
+LIMITS: dict[str, tuple[int, int]] = {
+    "video_frames": (1, 24),
+    "video_frame_width": (128, 1920),
+    "video_max_minutes": (1, 120),
+    "video_max_size_mb": (1, 500),
+    "video_caption_concurrency": (1, 8),
+    "max_items_per_type": (1, 10),
+    "max_parallel_parses": (1, 8),
+    "audio_spectrum_seg": (1, 30),
+    "audio_spectrum_max_seconds": (0, 3600),
+    "audio_stt_chunk_mb": (0, 9),
+    "audio_stt_max_chunks": (1, 60),
+    "audio_deep_max_seconds": (0, 3600),
+    "attach_audio_max_mb": (1, 100),
+    "log_max_lines": (200, 20000),
+}
+
+
+def clamp_value(key: str, value: Any) -> Any:
+    """把数值配置钳制到合法范围；非数值键原样返回。"""
+    limits = LIMITS.get(key)
+    if limits is None:
+        return value
+    try:
+        num = int(value)
+    except (TypeError, ValueError):
+        num = DEFAULTS.get(key, limits[0])
+    low, high = limits
+    return max(low, min(high, int(num)))
 
 
 def _to_bool(value: Any, default: bool) -> bool:
@@ -120,7 +153,7 @@ class PluginConfig:
         return _to_bool(self.get(key), default)
 
     def int(self, key: str, default: int = 0) -> int:
-        return _to_int(self.get(key), default)
+        return _to_int(clamp_value(key, self.get(key)), default)
 
     def str(self, key: str, default: str = "") -> str:
         return _to_str(self.get(key), default)
@@ -197,12 +230,12 @@ class PluginConfig:
     # ---------- 生效配置 ----------
 
     def effective_with_overrides(self, overrides: dict[str, Any] | None) -> dict[str, Any]:
-        """全局默认值 + 覆写项 = 生效配置。"""
+        """全局默认值 + 覆写项 = 生效配置（数值键统一钳制）。"""
         effective = {key: self.get(key) for key in DEFAULTS.keys()}
         if overrides:
             for key, value in overrides.items():
                 if key in DEFAULTS:
-                    effective[key] = value
+                    effective[key] = clamp_value(key, value)
         return effective
 
     def effective_config_for(self, platform_id: str = "", self_id: str = "",

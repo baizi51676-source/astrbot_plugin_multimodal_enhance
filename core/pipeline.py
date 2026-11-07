@@ -51,6 +51,10 @@ AUDIO_MAX_BYTES = 30 * 1024 * 1024
 # 定时清理周期与过期时长（秒）：周期远小于过期时长，避免误删正在使用的工作目录
 JANITOR_INTERVAL = 300
 RESULT_TTL = 3600
+# 分块转写的并发度（STT 为网络往返；过高可能触发服务端限流）
+STT_CHUNK_CONCURRENCY = 3
+# 抽帧并发度：单帧 ffmpeg 进程启动开销较大，2-3 路在 2 核机上收益最好
+FRAME_CONCURRENCY = 3
 
 _KNOWN_COMP_NAMES = {"plain", "at", "reply", "face", "poke", "image", "node", "nodes"}
 
@@ -105,6 +109,20 @@ class MediaPipeline:
         # 正在解析的任务工作目录（key -> workdir），清理时跳过，避免删掉在用的附件
         self._active_dirs: dict[str, str] = {}
         self._janitor: asyncio.Task | None = None
+        # 全局解析并发闸门：超出上限的任务排队等待，不会同时起一堆 ffmpeg/STT
+        self._sem: asyncio.Semaphore | None = None
+        self._sem_size = 0
+
+    def _gate(self) -> asyncio.Semaphore:
+        """按配置惰性创建并发闸门；配置变化时重建。"""
+        try:
+            size = max(1, min(8, self.plugin.conf.int("max_parallel_parses", 2)))
+        except Exception:
+            size = 2
+        if self._sem is None or self._sem_size != size:
+            self._sem = asyncio.Semaphore(size)
+            self._sem_size = size
+        return self._sem
 
     # ---------------- 定时清理 ----------------
 
@@ -451,6 +469,13 @@ class MediaPipeline:
                 f"task_{int(time.time())}_{uuid.uuid4().hex[:6]}",
             )
             os.makedirs(workdir, exist_ok=True)
+            self.plugin.log.info(f"检测到媒体内容，开始解析：{key}")
+            # 先起解析任务再发「分析中」提示：提示依赖模型调用，不能阻塞媒体处理
+            task = asyncio.create_task(
+                self._run(event, det, flags, settings, workdir, key)
+            )
+            self._tasks[key] = task
+            task.add_done_callback(lambda done, k=key: self._forget_task(k))
             if flags.get("notice_enabled") and det.takes_time:
                 try:
                     platform_name = ""
@@ -475,12 +500,6 @@ class MediaPipeline:
                     await self._send_proactive(event, notice)
                 except Exception as exc:
                     self.plugin.log.warn(f"分析中提示发送失败：{exc}")
-            self.plugin.log.info(f"检测到媒体内容，开始解析：{key}")
-            task = asyncio.create_task(
-                self._run(event, det, flags, settings, workdir, key)
-            )
-            self._tasks[key] = task
-            task.add_done_callback(lambda done, k=key: self._forget_task(k))
         except Exception as exc:
             self.plugin.log.error(f"消息检测异常：{exc}")
 
@@ -524,7 +543,9 @@ class MediaPipeline:
                    workdir: str, key: str) -> None:
         self._active_dirs[key] = workdir
         try:
-            parts = await self._analyze(event, det, flags, settings, workdir)
+            # 全局闸门：超过并发上限时在此排队（排队期间 workdir 已登记，不会被定时清理误删）
+            async with self._gate():
+                parts = await self._analyze(event, det, flags, settings, workdir)
             text = "\n\n".join(p for p in parts if p)
             if len(text) > MAX_TOTAL_CHARS:
                 text = text[:MAX_TOTAL_CHARS] + "\n……（解析内容过长，已截断）"
@@ -911,15 +932,24 @@ class MediaPipeline:
                     truncated = True
                 if len(parts) > 1:
                     self.plugin.log.info(f"音频超过 {chunk_mb}MB，已拆分为 {len(parts)} 段转写。")
-        # 3) 逐段调用 STT
+        # 3) 分块并发调用 STT（STT 是网络往返，串行会让延迟随段数线性增长）；
+        #    结果严格按段号顺序拼接，避免乱序改变语义
         texts: list[str] = []
-        for idx, part in enumerate(parts, 1):
-            try:
-                text = await asyncio.wait_for(stt.get_text(part), timeout=180)
-                if text and str(text).strip():
-                    texts.append(str(text).strip())
-            except Exception as exc:
-                self.plugin.log.warn(f"语音转文本失败（第{idx}/{len(parts)}段）：{exc}")
+        if parts:
+            sem = asyncio.Semaphore(STT_CHUNK_CONCURRENCY)
+
+            async def _one_stt(idx: int, part: str) -> tuple[int, str]:
+                async with sem:
+                    try:
+                        text = await asyncio.wait_for(stt.get_text(part), timeout=180)
+                        return idx, (str(text).strip() if text else "")
+                    except Exception as exc:
+                        self.plugin.log.warn(f"语音转文本失败（第{idx}/{len(parts)}段）：{exc}")
+                        return idx, ""
+
+            results = await asyncio.gather(
+                *[_one_stt(i, p) for i, p in enumerate(parts, 1)])
+            texts = [txt for _idx, txt in sorted(results) if txt]
         # 4) 兜底：转码/拆分都未成功时，直接尝试原文件
         if not texts and base != path:
             try:
@@ -955,9 +985,14 @@ class MediaPipeline:
         if not audio_analyzer.has_numpy():
             return ""
         seg = seg_sec or _sget_int(settings, "audio_spectrum_seg", 5)
-        pcm = await decode_pcm(path, 22050, ffmpeg)
+        # 只解码前 N 秒：1 小时音频整段进内存可达 150MB+，转 float 后还会翻倍
+        max_sec = _sget_int(settings, "audio_spectrum_max_seconds", 300)
+        pcm = await decode_pcm(path, 22050, ffmpeg, max_seconds=max_sec)
         segments = audio_analyzer.spectrum_segments(pcm, 22050, seg)
-        return audio_analyzer.spectrum_text(segments)
+        text = audio_analyzer.spectrum_text(segments)
+        if text and max_sec > 0:
+            text += f"\n（仅分析前 {max_sec} 秒）"
+        return text
 
     # -------- 音乐链接 --------
 

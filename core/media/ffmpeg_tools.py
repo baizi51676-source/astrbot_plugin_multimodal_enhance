@@ -131,11 +131,16 @@ async def extract_audio_track(video: str, out_wav: str, ffmpeg: str = "ffmpeg",
     return rc == 0 and os.path.exists(out_wav) and os.path.getsize(out_wav) > 0
 
 
-async def decode_pcm(path: str, sr: int = 22050, ffmpeg: str = "ffmpeg") -> bytes:
-    """解码为 16bit 单声道 PCM（供频谱分析）。"""
-    rc, out, _ = await run_proc(
-        [ffmpeg, "-v", "error", "-i", path, "-vn",
-         "-f", "s16le", "-ac", "1", "-ar", str(sr), "-"],
-        timeout=240,
-    )
+async def decode_pcm(path: str, sr: int = 22050, ffmpeg: str = "ffmpeg",
+                     max_seconds: float = 0) -> bytes:
+    """解码为 16bit 单声道 PCM（供频谱分析）。
+
+    max_seconds > 0 时只解码前 N 秒，避免长音频整段进内存
+    （1 小时音频约 151MB PCM，转 float 数组后还会再翻数倍）。
+    """
+    cmd = [ffmpeg, "-v", "error", "-i", path, "-vn"]
+    if max_seconds and max_seconds > 0:
+        cmd += ["-t", f"{float(max_seconds):.3f}"]
+    cmd += ["-f", "s16le", "-ac", "1", "-ar", str(sr), "-"]
+    rc, out, _ = await run_proc(cmd, timeout=240)
     return out if rc == 0 and out else b""

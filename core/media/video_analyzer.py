@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 from .ffmpeg_tools import extract_audio_track, extract_frame, probe_media, summarize_probe
+
+# 抽帧并发度：单帧 ffmpeg 启动约 350ms，2-3 路并发在 2 核机上收益最好
+FRAME_CONCURRENCY = 3
 
 
 async def analyze_video_source(path: str, workdir: str, ffmpeg: str, ffprobe: str,
@@ -17,12 +21,21 @@ async def analyze_video_source(path: str, workdir: str, ffmpeg: str, ffprobe: st
     duration = meta.get("duration") or 0
     if duration and duration > 0.5:
         count = max(1, min(24, int(frame_count)))
-        for i in range(count):
+        sem = asyncio.Semaphore(FRAME_CONCURRENCY)
+
+        async def _one(i: int) -> dict | None:
             ts = duration * (i + 0.5) / count
             out = os.path.join(workdir, f"frame_{i + 1}.jpg")
-            ok = await extract_frame(path, ts, out, frame_width, ffmpeg)
+            async with sem:
+                ok = await extract_frame(path, ts, out, frame_width, ffmpeg)
             if ok:
-                frames.append({"time": round(ts, 1), "path": out})
+                return {"time": round(ts, 1), "path": out}
+            return None
+
+        results = await asyncio.gather(*[_one(i) for i in range(count)],
+                                       return_exceptions=True)
+        # 保持帧的时间顺序（后续逐帧描述按此顺序输出）
+        frames = [r for r in results if isinstance(r, dict)]
 
     audio_path = None
     has_audio = (meta.get("audio_streams") or 0) > 0
