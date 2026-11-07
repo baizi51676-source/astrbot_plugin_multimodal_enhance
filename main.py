@@ -251,6 +251,10 @@ class Main(Star):
         except Exception:
             pass
         try:
+            env_manager.cancel_install_on_unload()
+        except Exception:
+            pass
+        try:
             caption_patch.uninstall(self)
         except Exception:
             pass
@@ -285,6 +289,7 @@ class Main(Star):
             ("env/check", "GET", self._api_env_check, "环境检测"),
             ("env/install", "POST", self._api_env_install, "安装可选依赖"),
             ("env/install/status", "GET", self._api_env_install_status, "安装状态"),
+            ("env/install/cancel", "POST", self._api_env_install_cancel, "取消安装"),
             ("env/clean", "POST", self._api_env_clean, "清理临时文件"),
         ]
         try:
@@ -639,6 +644,13 @@ class Main(Star):
         if state.get("running"):
             state["output"] = str(state.get("output") or "")[-4000:]
         return json_response(state)
+
+    async def _api_env_install_cancel(self):
+        cancelled = env_manager.cancel_install()
+        if cancelled:
+            self.log.info("已取消依赖安装任务。")
+            return json_response({"cancelled": True, "message": "已取消安装"})
+        return json_response({"cancelled": False, "message": "当前没有进行中的安装任务"})
 
     async def _api_env_clean(self):
         result = env_manager.clean_temp(self.workdir_base)

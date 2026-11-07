@@ -453,6 +453,8 @@ function renderEnv(data) {
 
 function renderInstall(state) {
   const out = $("#install-output");
+  const cancelBtn = $("#install-cancel");
+  if (cancelBtn) cancelBtn.hidden = !(state && state.running);
   if (!state || (!state.running && !state.started_at)) {
     out.textContent = "（暂无安装任务）";
     return;
@@ -536,6 +538,20 @@ async function startOneClick() {
 }
 
 $("#install-all").onclick = () => startOneClick();
+$("#install-cancel").onclick = async () => {
+  const btn = $("#install-cancel");
+  btn.disabled = true;
+  try {
+    const res = await bridge.apiPost("env/install/cancel", {});
+    toast(res.message || (res.cancelled ? "已取消安装" : "当前没有进行中的安装任务"),
+          !!res.cancelled);
+    loadEnv();
+  } catch (error) {
+    toast("取消失败：" + error.message, false);
+  } finally {
+    btn.disabled = false;
+  }
+};
 
 /* ---------------- 初始化 ---------------- */
 (async function init() {

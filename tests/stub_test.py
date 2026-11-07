@@ -763,6 +763,63 @@ def test_native_stt_concurrency() -> None:
     check("无循环时取锁返回 None（退化为无锁路径）", ctl._stage_lock() is None)
 
 
+def test_install_lifecycle() -> None:
+    print("- 依赖安装任务生命周期")
+    from core import env_manager as em
+
+    async def run():
+        # 1) 重复启动被拒
+        async def slow():
+            em._install_state.update({"running": True, "started_at": "t",
+                                      "packages": ["x"], "output": "", "ok": None})
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                em._install_state.update({"running": False, "ok": False})
+                raise
+
+        em._install_state.update({"running": False})
+        em._install_task = None
+        ok1, _msg1 = em._start_task(slow(), "已启动")
+        check("首次启动成功", ok1 is True)
+        ok2, msg2 = em._start_task(slow(), "已启动")
+        check("第二次启动被拒", ok2 is False and "进行中" in msg2)
+
+        await asyncio.sleep(0.05)
+        check("运行中状态为真", em._install_state.get("running") is True)
+
+        # 2) 取消
+        cancelled = em.cancel_install()
+        check("取消返回成功", cancelled is True)
+        await asyncio.sleep(0.05)
+        check("取消后状态复位", em._install_state.get("running") is False)
+        check("取消后任务引用清空", em._install_task is None)
+        check("取消后输出有标记", "已取消" in str(em._install_state.get("output")))
+
+        # 3) 没有任务时取消返回 False
+        check("无任务时取消返回 False", em.cancel_install() is False)
+
+        # 4) 卸载复位
+        em._install_state.update({"running": True})
+        em.cancel_install_on_unload()
+        check("卸载后状态复位", em._install_state.get("running") is False)
+
+        # 5) 任务异常也会复位
+        async def boom():
+            em._install_state.update({"running": True})
+            raise RuntimeError("模拟失败")
+
+        em._install_task = None
+        em._install_state.update({"running": False})
+        ok, _ = em._start_task(boom(), "已启动")
+        check("异常任务启动成功", ok is True)
+        await asyncio.sleep(0.05)
+        check("异常后状态复位", em._install_state.get("running") is False)
+        check("异常被记录", "模拟失败" in str(em._install_state.get("output")))
+
+    asyncio.run(run())
+
+
 def main() -> None:
     print("== 多模态理解增强 · 离线自测 ==")
     test_config()
@@ -786,6 +843,7 @@ def main() -> None:
     test_prune()
     test_netguard()
     test_native_stt_concurrency()
+    test_install_lifecycle()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     if FAIL:
         sys.exit(1)

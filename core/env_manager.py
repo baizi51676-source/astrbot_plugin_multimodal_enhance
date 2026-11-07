@@ -28,6 +28,9 @@ _install_state: dict = {
     "ok": None,
 }
 
+# 安装任务的强引用（不保存会被 GC 回收）；同时用于取消
+_install_task: asyncio.Task | None = None
+
 
 def format_bytes(num) -> str:
     try:
@@ -110,7 +113,11 @@ async def _run_install(packages: list[str], index_url: str) -> None:
            "--disable-pip-version-check"]
     if index_url:
         cmd += ["-i", index_url]
-    rc, out, err = await run_proc(cmd, timeout=1200)
+    try:
+        rc, out, err = await run_proc(cmd, timeout=1200)
+    except asyncio.CancelledError:
+        _install_state.update({"running": False, "ok": False, "output": "安装任务已取消\n"})
+        raise
     tail = (out + b"\n" + err).decode("utf-8", "ignore")[-8000:]
     _install_state.update({"running": False, "output": tail, "ok": rc == 0})
 
@@ -161,26 +168,64 @@ async def _run_one_click(index_url: str) -> None:
 
 def start_one_click(index_url: str = "") -> tuple[bool, str]:
     """一键配置所有功能依赖（ffmpeg/ffprobe + Python 依赖 + yt-dlp）。"""
-    if _install_state.get("running"):
-        return False, "已有安装任务进行中"
-    try:
-        asyncio.get_event_loop().create_task(_run_one_click(index_url))
-    except RuntimeError:
-        return False, "无事件循环，无法启动安装"
-    return True, "一键配置已启动"
+    return _start_task(_run_one_click(index_url), "一键配置已启动")
 
 
 def start_install(packages: list[str], index_url: str = "") -> tuple[bool, str]:
-    if _install_state.get("running"):
-        return False, "已有安装任务进行中"
     pkgs = [p.strip() for p in packages if p and p.strip()]
     if not pkgs:
         return False, "未提供要安装的包"
+    return _start_task(_run_install(pkgs, index_url), "安装已启动")
+
+
+def _start_task(coro, ok_message: str) -> tuple[bool, str]:
+    """启动安装任务并保存强引用，结束/失败/取消后复位状态。"""
+    global _install_task
+    if _install_state.get("running"):
+        return False, "已有安装任务进行中"
+    if _install_task is not None and not _install_task.done():
+        return False, "已有安装任务进行中"
     try:
-        asyncio.get_event_loop().create_task(_run_install(pkgs, index_url))
+        loop = asyncio.get_running_loop()
     except RuntimeError:
         return False, "无事件循环，无法启动安装"
-    return True, "安装已启动"
+    task = loop.create_task(coro)
+    _install_task = task
+
+    def _finalize(done) -> None:
+        global _install_task
+        _install_task = None
+        _install_state["running"] = False
+        if done.cancelled():
+            # 取消已在 cancel_install 里写过输出，这里只兜底
+            _install_state["ok"] = False
+            return
+        exc = done.exception()
+        if exc is not None:
+            _install_state.update({"ok": False,
+                                   "output": f"安装任务异常：{exc}"})
+
+    task.add_done_callback(_finalize)
+    return True, ok_message
+
+
+def cancel_install() -> bool:
+    """取消正在运行的安装任务。返回是否确实取消了任务。"""
+    task = _install_task
+    if task is None or task.done():
+        _install_state["running"] = False
+        return False
+    task.cancel()
+    _install_state.update({"running": False,
+                           "output": str(_install_state.get("output") or "") + "\n[已取消]\n",
+                           "ok": False})
+    return True
+
+
+def cancel_install_on_unload() -> None:
+    """插件卸载/重载时调用：取消任务并复位状态，避免页面一直显示「安装中」。"""
+    cancel_install()
+    _install_state["running"] = False
 
 
 def clean_temp(workdir: str, keep_root: bool = True) -> dict:
