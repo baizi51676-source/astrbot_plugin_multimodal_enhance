@@ -6,6 +6,7 @@ import asyncio
 import glob
 import json
 import os
+from urllib.parse import urljoin
 
 try:
     import aiohttp
@@ -13,14 +14,23 @@ except Exception:  # pragma: no cover
     aiohttp = None  # type: ignore
 
 from .ffmpeg_tools import run_proc
+from .netguard import is_safe_url, masked_host
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+
+MAX_REDIRECTS = 3
+
+
+def _url_ok(url: str) -> tuple[bool, str]:
+    return is_safe_url(url)
 
 
 async def http_get_json(url: str, headers: dict | None = None,
                         timeout: float = 20) -> dict | list | None:
     if aiohttp is None:
+        return None
+    if not is_safe_url(url)[0]:
         return None
     try:
         async with aiohttp.ClientSession(headers={
@@ -38,45 +48,77 @@ async def http_get_json(url: str, headers: dict | None = None,
 
 async def http_get_final_url(url: str, headers: dict | None = None,
                              timeout: float = 15) -> str | None:
-    """跟随重定向，返回最终 URL（用于短链解析）。"""
+    """跟随重定向，返回最终 URL（用于短链解析）。每一跳都做网络边界校验。"""
     if aiohttp is None:
         return None
+    ok, _ = _url_ok(url)
+    if not ok:
+        return None
+    current = url
     try:
         async with aiohttp.ClientSession(headers={"User-Agent": UA, **(headers or {})}) as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout),
-                                   allow_redirects=True) as resp:
-                return str(resp.url)
+            for _hop in range(MAX_REDIRECTS + 1):
+                async with session.get(current, timeout=aiohttp.ClientTimeout(total=timeout),
+                                       allow_redirects=False) as resp:
+                    if resp.status in (301, 302, 303, 307, 308):
+                        location = resp.headers.get("Location")
+                        if not location:
+                            return str(resp.url)
+                        current = urljoin(str(resp.url), location)
+                        ok, _ = _url_ok(current)
+                        if not ok:
+                            return None
+                        continue
+                    return str(resp.url)
+        return None
     except Exception:
         return None
 
 
 async def download_url(url: str, dest: str, max_bytes: int,
                        headers: dict | None = None, timeout: float = 120) -> tuple[bool, str]:
-    """流式下载，执行大小上限。返回 (是否成功, 说明)。"""
+    """流式下载，执行大小上限；重定向逐跳校验。返回 (是否成功, 说明)。"""
     if aiohttp is None:
         return False, "aiohttp 不可用"
+    ok, reason = _url_ok(url)
+    if not ok:
+        return False, f"地址被拒绝（{reason}）"
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    target = url
     try:
         async with aiohttp.ClientSession(headers={"User-Agent": UA, **(headers or {})}) as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
-                if resp.status >= 400:
-                    return False, f"HTTP {resp.status}"
-                length = resp.content_length
-                if length and length > max_bytes:
-                    return False, f"超过大小上限（{length} > {max_bytes}）"
-                written = 0
-                with open(dest, "wb") as fp:
-                    async for chunk in resp.content.iter_chunked(256 * 1024):
-                        written += len(chunk)
-                        if written > max_bytes:
-                            fp.close()
-                            try:
-                                os.remove(dest)
-                            except OSError:
-                                pass
-                            return False, "超过大小上限，已中止"
-                        fp.write(chunk)
-        return True, f"{written} bytes"
+            for _hop in range(MAX_REDIRECTS + 1):
+                async with session.get(target, timeout=aiohttp.ClientTimeout(total=timeout),
+                                       allow_redirects=False) as resp:
+                    if resp.status in (301, 302, 303, 307, 308):
+                        location = resp.headers.get("Location")
+                        if not location:
+                            return False, "重定向缺少 Location"
+                        next_url = urljoin(str(resp.url), location)
+                        allowed, why = _url_ok(next_url)
+                        if not allowed:
+                            return False, f"重定向被拒绝（{masked_host(next_url)}：{why}）"
+                        target = next_url
+                        continue
+                    if resp.status >= 400:
+                        return False, f"HTTP {resp.status}"
+                    length = resp.content_length
+                    if length and length > max_bytes:
+                        return False, f"超过大小上限（{length} > {max_bytes}）"
+                    written = 0
+                    with open(dest, "wb") as fp:
+                        async for chunk in resp.content.iter_chunked(256 * 1024):
+                            written += len(chunk)
+                            if written > max_bytes:
+                                fp.close()
+                                try:
+                                    os.remove(dest)
+                                except OSError:
+                                    pass
+                                return False, "超过大小上限，已中止"
+                            fp.write(chunk)
+                return True, f"{written} bytes"
+            return False, "重定向次数过多"
     except asyncio.CancelledError:
         try:
             if os.path.exists(dest):

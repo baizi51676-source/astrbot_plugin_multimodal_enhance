@@ -19,12 +19,14 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 
 from . import capabilities, llm as llm_utils
 from .config import _to_bool, _to_int, _to_str
 from .media import audio_analyzer, bilibili, ncm, video_analyzer
 from .media.downloader import download_url, pick_video_meta, ytdlp_download, ytdlp_json
 from .media.ffmpeg_tools import decode_pcm, find_tool, probe_media, run_proc, summarize_probe
+from .media.netguard import is_safe_url, masked_host
 
 try:
     from astrbot.api.event import MessageChain  # type: ignore
@@ -654,18 +656,58 @@ class MediaPipeline:
                 return None
         if value.startswith("file://"):
             try:
-                path = unquote(urlparse(value).path)
-                return path if os.path.isfile(path) else None
+                path = url2pathname(unquote(urlparse(value).path))
+                if not os.path.isfile(path):
+                    return None
+                if self._local_path_allowed(path, workdir):
+                    return path
+                self.plugin.log.warn(
+                    f"已拒绝本地路径（不在允许目录内）：{os.path.basename(path)}")
+                return None
             except Exception:
                 return None
         if value.startswith(("http://", "https://")):
+            allowed, reason = is_safe_url(value)
+            if not allowed:
+                self.plugin.log.warn(
+                    f"已拒绝不安全的媒体地址：{masked_host(value)}（{reason}）")
+                return None
             suffix = os.path.splitext(urlparse(value).path)[1] or ".bin"
             dest = os.path.join(workdir, f"dl_{uuid.uuid4().hex[:8]}{suffix}")
-            ok, _msg = await download_url(value, dest, max_bytes)
+            ok, msg = await download_url(value, dest, max_bytes)
+            if not ok:
+                self.plugin.log.debug(f"下载未成功（{masked_host(value)}）：{msg}")
             return dest if ok else None
+        if value.startswith(("ftp://", "data:", "//")):
+            self.plugin.log.warn(f"已拒绝不支持的媒体协议：{value.split(':', 1)[0]}")
+            return None
         if os.path.isfile(value):
-            return value
+            if self._local_path_allowed(value, workdir):
+                return value
+            self.plugin.log.warn(
+                f"已拒绝本地路径（不在允许目录内）：{os.path.basename(value)}")
+            return None
         return None
+
+    def _local_path_allowed(self, path: str, workdir: str) -> bool:
+        """本地文件只允许来自插件数据目录或本次任务工作目录。"""
+        try:
+            real = os.path.realpath(path)
+        except Exception:
+            return False
+        allowed = []
+        for base in (getattr(self.plugin, "data_dir", ""), workdir):
+            if not base:
+                continue
+            try:
+                allowed.append(os.path.realpath(str(base)))
+            except Exception:
+                continue
+        return self._path_in_bases(real, allowed)
+
+    @staticmethod
+    def _path_in_bases(real: str, allowed: list[str]) -> bool:
+        return any(real == base or real.startswith(base + os.sep) for base in allowed)
 
     @staticmethod
     def _write_base64(payload: str, workdir: str) -> str | None:

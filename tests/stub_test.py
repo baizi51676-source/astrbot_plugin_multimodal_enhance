@@ -614,6 +614,79 @@ def test_prune() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_netguard() -> None:
+    print("- 网络边界（SSRF / 协议白名单）")
+    from core.media.netguard import is_safe_url
+
+    blocked = [
+        ("http://127.0.0.1/x.mp3", "回环"),
+        ("http://10.0.0.1/a", "内网"),
+        ("http://192.168.1.5/a.mp4", "内网"),
+        ("http://169.254.169.254/latest/meta-data", "链路本地"),
+        ("http://[::1]/x", "IPv6 回环"),
+        ("http://localhost:8080/a.mp3", "本机名"),
+        ("file:///etc/passwd", "file 协议"),
+        ("ftp://x.test/y", "ftp 协议"),
+        ("gopher://x.test/y", "gopher 协议"),
+        ("", "空地址"),
+    ]
+    for url, label in blocked:
+        ok, _reason = is_safe_url(url)
+        check(f"拒绝{label}", ok is False)
+
+    # 域名解析结果注入：公网域名通过、解析到内网拒绝（不依赖真实 DNS）
+    from core.media import netguard
+
+    def fake_public(host, *args, **kwargs):
+        return [(2, 1, 6, "", ("93.184.216.34", 0))]
+
+    def fake_private(host, *args, **kwargs):
+        return [(2, 1, 6, "", ("192.168.0.10", 0))]
+
+    orig = netguard.socket.getaddrinfo
+    try:
+        netguard.socket.getaddrinfo = fake_public
+        ok, _ = is_safe_url("https://music.163.com/song/media/outer/url?id=1.mp3")
+        check("公网域名放行", ok is True)
+        ok, _ = is_safe_url("https://api.bilibili.com/x/web-interface/view?bvid=BV1xx")
+        check("B 站 API 放行", ok is True)
+
+        netguard.socket.getaddrinfo = fake_private
+        ok, reason = is_safe_url("https://evil.test/a.mp3")
+        check("解析到内网被拒", ok is False)
+        check("拒绝原因可读", "内网" in reason)
+    finally:
+        netguard.socket.getaddrinfo = orig
+
+    # 本地路径白名单：目录外拒绝、目录内放行
+    pipeline = _make_pipeline()
+    with tempfile.TemporaryDirectory() as tmp:
+        inside = os.path.join(tmp, "ok.bin")
+        with open(inside, "wb") as fp:
+            fp.write(b"x")
+        outside_dir = tempfile.mkdtemp()
+        outside = os.path.join(outside_dir, "secret.bin")
+        with open(outside, "wb") as fp:
+            fp.write(b"x")
+        try:
+            ok = asyncio.run(pipeline._resolve_value(inside, tmp, 10 ** 6))
+            check("工作目录内的本地路径放行", ok is not None)
+            bad = asyncio.run(pipeline._resolve_value(outside, tmp, 10 ** 6))
+            check("工作目录外的本地路径拒绝", bad is None)
+            uri = pathlib.Path(outside).as_uri()
+            bad2 = asyncio.run(pipeline._resolve_value(uri, tmp, 10 ** 6))
+            check("越界 file:// 拒绝", bad2 is None)
+            uri_in = pathlib.Path(inside).as_uri()
+            good2 = asyncio.run(pipeline._resolve_value(uri_in, tmp, 10 ** 6))
+            check("目录内 file:// 放行（含盘符）",
+                  good2 is not None and os.path.normpath(good2) == os.path.normpath(inside))
+            ftp = asyncio.run(pipeline._resolve_value("ftp://x.test/y.mp3", tmp, 10 ** 6))
+            check("ftp 直链拒绝", ftp is None)
+        finally:
+            import shutil
+            shutil.rmtree(outside_dir, ignore_errors=True)
+
+
 def main() -> None:
     print("== 多模态理解增强 · 离线自测 ==")
     test_config()
@@ -635,6 +708,7 @@ def main() -> None:
     test_attach_flags()
     test_attachment_flow()
     test_prune()
+    test_netguard()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     if FAIL:
         sys.exit(1)
