@@ -820,6 +820,70 @@ def test_install_lifecycle() -> None:
     asyncio.run(run())
 
 
+def test_music_attach_still_injects_meta() -> None:
+    print("- 音乐卡片：附件直传后仍注入元数据与歌词")
+    from core.media import ncm
+
+    pipeline = _make_pipeline()
+    calls = {"download": 0, "detail": 0, "lyric": 0}
+
+    async def fake_download(song_id, dest_dir, cookie="", max_bytes=None):
+        calls["download"] += 1
+        os.makedirs(dest_dir, exist_ok=True)
+        p = os.path.join(str(dest_dir), f"ncm_{song_id}.mp3")
+        with open(p, "wb") as fp:  # noqa: ASYNC230 - 测试桩，仅写 60 字节
+            fp.write(b"ID3" + b"x" * 60)
+        return p
+    async def fake_detail(song_id, cookie=""):
+        calls["detail"] += 1
+        return {"id": song_id, "name": "cat reincarnation", "artists": "nyamura",
+                "album": "T", "duration_ms": 252000, "publish_ms": 0}
+
+    async def fake_lyric(song_id, cookie=""):
+        calls["lyric"] += 1
+        return {"lyric": "[00:00.000] 作词 : nyamura\n[00:24.592] 初めて出会った日から",
+                "tlyric": ""}
+
+    async def fake_spectrum(path, ffmpeg, settings, seg_sec=None):
+        return "峰值频率：440Hz"
+
+    orig = (ncm.download_song, ncm.fetch_song_detail, ncm.fetch_lyric,
+            pipeline._spectrum_for)
+    ncm.download_song = fake_download
+    ncm.fetch_song_detail = fake_detail
+    ncm.fetch_lyric = fake_lyric
+    pipeline._spectrum_for = fake_spectrum
+    try:
+        async def run_with_attach():
+            attach = {"audio": True, "image": False, "max_bytes": 10 ** 6, "files": []}
+            return await pipeline._analyze_music_ref(
+                ("id", "2694804068"), False, "/tmp/mme_music", "ffmpeg",
+                {"audio_enabled": True}, "umo", attach)
+
+        text = asyncio.run(run_with_attach())
+        check("直传后仍包含歌名与歌手", "cat reincarnation" in text and "nyamura" in text)
+        check("直传后仍包含专辑与时长", "专辑" in text and "4:12" in text)
+        check("直传后仍包含歌词", "歌词" in text and "初めて出会った" in text)
+        check("直传提示仍在", "已作为附件随消息发送" in text)
+        check("音源只下载一次（不重复下载）", calls["download"] == 1)
+        check("直传时跳过频谱与深度分析", "频谱数据" not in text)
+
+        calls.update({"download": 0, "detail": 0, "lyric": 0})
+
+        async def run_without_attach():
+            return await pipeline._analyze_music_ref(
+                ("id", "2694804068"), True, "/tmp/mme_music2", "ffmpeg",
+                {"audio_enabled": True}, "umo", None)
+
+        text2 = asyncio.run(run_without_attach())
+        check("非直传时输出频谱", "频谱数据" in text2 and "440Hz" in text2)
+        check("非直传时标注引用消息", "（引用消息）" in text2)
+        check("非直传也含歌词", "初めて出会った" in text2)
+    finally:
+        (ncm.download_song, ncm.fetch_song_detail, ncm.fetch_lyric,
+         pipeline._spectrum_for) = orig
+
+
 def main() -> None:
     print("== 多模态理解增强 · 离线自测 ==")
     test_config()
@@ -844,6 +908,7 @@ def main() -> None:
     test_netguard()
     test_native_stt_concurrency()
     test_install_lifecycle()
+    test_music_attach_still_injects_meta()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     if FAIL:
         sys.exit(1)

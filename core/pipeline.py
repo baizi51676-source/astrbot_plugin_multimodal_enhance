@@ -970,11 +970,15 @@ class MediaPipeline:
         if not song_id:
             lines.append("（短链解析失败，已跳过）")
             return "\n".join(lines)
-        if attach and attach.get("audio"):
-            song_path = await ncm.download_song(song_id, workdir, cookie)
-            if song_path and self._collect_audio_attachment(attach, song_path, "音乐音频"):
-                lines.append("（歌曲音频已作为附件随消息发送，主模型可直接理解）")
-                return "\n".join(lines)
+
+        # 音源只下载一次：既用于附件直传，也复用给频谱/深度分析
+        attached = False
+        song_path = await ncm.download_song(song_id, workdir, cookie)
+        if song_path and attach and attach.get("audio") \
+                and self._collect_audio_attachment(attach, song_path, "音乐音频"):
+            attached = True
+
+        # 元数据与歌词是结构化信息，音频附件替代不了，直传后仍要注入
         detail = await ncm.fetch_song_detail(song_id, cookie)
         if detail:
             lines.append(f"歌曲：{detail.get('name', '?')} - {detail.get('artists', '?')}")
@@ -982,9 +986,12 @@ class MediaPipeline:
                 f"专辑：{detail.get('album', '?')} · 时长 {ncm.format_duration(detail.get('duration_ms'))}")
         else:
             lines.append("（未获取到歌曲元数据）")
-        path = await ncm.download_song(song_id, workdir, cookie)
-        if path:
-            spectrum = await self._spectrum_for(path, ffmpeg, settings)
+
+        if attached:
+            # 音频已直传，主模型可直接听，不再重复做频谱/深度分析
+            lines.append("（歌曲音频已作为附件随消息发送，主模型可直接理解）")
+        elif song_path:
+            spectrum = await self._spectrum_for(song_path, ffmpeg, settings)
             if spectrum:
                 lines.append("频谱数据（文本）：\n" + spectrum)
             mode = _sget_str(settings, "audio_deep_mode", "auto")
@@ -992,13 +999,14 @@ class MediaPipeline:
                 if audio_analyzer.has_librosa():
                     limit = _sget_int(settings, "audio_deep_max_seconds", 300)
                     summary = await asyncio.get_event_loop().run_in_executor(
-                        None, audio_analyzer.deep_summary, path, limit)
+                        None, audio_analyzer.deep_summary, song_path, limit)
                     if summary:
                         lines.append("深度分析（声纹包式）：\n" + audio_analyzer.deep_summary_text(summary))
                 elif mode == "on":
                     lines.append("（深度分析需要 librosa，可在插件页面「环境配置」中一键安装）")
         else:
             lines.append("（未能下载音源，跳过频谱/深度分析）")
+
         lyric = await ncm.fetch_lyric(song_id, cookie)
         if lyric and lyric.get("lyric"):
             text = lyric["lyric"].strip()
