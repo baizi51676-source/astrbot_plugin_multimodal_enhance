@@ -687,6 +687,82 @@ def test_netguard() -> None:
             shutil.rmtree(outside_dir, ignore_errors=True)
 
 
+def test_native_stt_concurrency() -> None:
+    print("- 原生语音转写接管（并发隔离与即时还原）")
+    from core import native_stt as ns
+    from core.config import PluginConfig
+
+    class P:
+        pass
+
+    plugin = P()
+    plugin.conf = PluginConfig({"audio_enabled": True, "cut_native_stt": True})
+    plugin.resolve_flags_for_event = lambda e: {"audio_enabled": True}
+    plugin.effective_settings_for = lambda e: {
+        "audio_file_enabled": True, "cut_native_stt": bool(getattr(e, "cut", True))}
+
+    ctl = ns.NativeSTTControl()
+    ctl.plugin = plugin
+
+    class Stage:
+        def __init__(self):
+            self.stt_settings = {"enable": True, "provider_id": "mimo"}
+
+    class E:
+        def __init__(self, name, cut):
+            self.name = name
+            self.cut = cut
+
+    # 真实交错：A（要求截断）先进入并在预处理中停留，B（不截断）中途到达。
+    # 旧实现（无锁 + 靠下一个事件还原）会让 B 的 sync 把 A 的截断改回开启，
+    # 即 A 处理期间 enable 变回 True —— 这里必须为 False。
+    seen = {}
+
+    async def run():
+        stage = Stage()
+        lock = asyncio.Lock()
+
+        async def handle_a():
+            async with lock:
+                try:
+                    ctl.sync_stage(stage, E("A", True))
+                    seen["A"] = bool(stage.stt_settings.get("enable"))
+                    await asyncio.sleep(0.05)   # 预处理耗时，留出 B 的到达窗口
+                    return "A"
+                finally:
+                    ctl.restore_stage(stage)
+
+        async def handle_b():
+            await asyncio.sleep(0.01)           # B 在 A 处理中到达
+            async with lock:                    # 被临界区挡在外面，等 A 结束
+                try:
+                    ctl.sync_stage(stage, E("B", False))
+                    seen["B"] = bool(stage.stt_settings.get("enable"))
+                    return "B"
+                finally:
+                    ctl.restore_stage(stage)
+
+        out = await asyncio.gather(handle_a(), handle_b())
+        return stage, out
+
+    stage, out = asyncio.run(run())
+    check("两个事件都执行完成", sorted(out) == ["A", "B"])
+    check("A（要求截断）执行期间原生 STT 关闭", seen.get("A") is False)
+    check("B（不截断）执行期间原生 STT 开启", seen.get("B") is True)
+    check("全部结束后设置已还原", stage.stt_settings.get("enable") is True
+          and not stage.stt_settings.get("_mme_cut"))
+
+    # 无锁路径也能保证「用完即还原」，不会把决策留给下一个事件
+    stage2 = Stage()
+    ctl.sync_stage(stage2, E("C", True))
+    check("进入时按事件设置", stage2.stt_settings.get("enable") is False)
+    ctl.restore_stage(stage2)
+    check("处理后立即还原（不等下一个事件）", stage2.stt_settings.get("enable") is True)
+    ctl.restore_stage(stage2)
+    check("重复还原安全", stage2.stt_settings.get("enable") is True)
+    check("无循环时取锁返回 None（退化为无锁路径）", ctl._stage_lock() is None)
+
+
 def main() -> None:
     print("== 多模态理解增强 · 离线自测 ==")
     test_config()
@@ -709,6 +785,7 @@ def main() -> None:
     test_attachment_flow()
     test_prune()
     test_netguard()
+    test_native_stt_concurrency()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     if FAIL:
         sys.exit(1)

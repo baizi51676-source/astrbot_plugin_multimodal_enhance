@@ -12,6 +12,7 @@ Gating 依据（按事件解析，支持多 bot 覆写）：
 
 from __future__ import annotations
 
+import asyncio
 import gc
 
 from .config import _to_bool
@@ -52,6 +53,7 @@ class NativeSTTControl:
 
     # ---------- 应用 / 恢复 ----------
     def sync_stage(self, stage, event) -> None:
+        """进入预处理前设置本事件所需状态（只负责「设」，不负责「还原」）。"""
         stt = getattr(stage, "stt_settings", None)
         is_cut = isinstance(stt, dict) and bool(stt.get("_mme_cut"))
         desired = self.should_cut(event)
@@ -63,15 +65,27 @@ class NativeSTTControl:
                     replacement["provider_id"] = stt["provider_id"]
                 stage.stt_settings = replacement
         elif not desired and is_cut:
-            orig = getattr(stage, "_mme_stt_orig", None)
-            if isinstance(orig, dict):
-                stage.stt_settings = orig
-            else:
-                stt["enable"] = True
+            self.restore_stage(stage)
+
+    def restore_stage(self, stage) -> None:
+        """处理完立即还原，避免把本事件的决策留给下一个事件。"""
+        stt = getattr(stage, "stt_settings", None)
+        if not (isinstance(stt, dict) and stt.get("_mme_cut")):
+            # 已被别的路径还原过，清掉残留标记即可
             try:
                 delattr(stage, "_mme_stt_orig")
             except Exception:
                 pass
+            return
+        orig = getattr(stage, "_mme_stt_orig", None)
+        if isinstance(orig, dict):
+            stage.stt_settings = orig
+        else:
+            stt["enable"] = True
+        try:
+            delattr(stage, "_mme_stt_orig")
+        except Exception:
+            pass
 
     def restore_all(self) -> None:
         """恢复所有曾被接管的阶段实例。"""
@@ -117,17 +131,56 @@ class NativeSTTControl:
             async def patched(self, event):
                 ctl = getattr(type(self), "_mme_control", None)
                 if ctl is not None:
-                    try:
-                        ctl.sync_stage(self, event)
-                    except Exception:
-                        pass
+                    lock = ctl._stage_lock()
+                    if lock is None:
+                        try:
+                            ctl.sync_stage(self, event)
+                            return await cls._mme_orig_process(self, event)
+                        finally:
+                            ctl.restore_stage(self)
+                    # 临界区：改设置 -> 原预处理 -> 立即还原，避免并发事件互相污染
+                    async with lock:
+                        try:
+                            ctl.sync_stage(self, event)
+                            return await cls._mme_orig_process(self, event)
+                        finally:
+                            ctl.restore_stage(self)
                 return await cls._mme_orig_process(self, event)
 
             patched.__name__ = "process"
             patched.__doc__ = "MME: 原生 STT 接管（按事件门控）"
             cls.process = patched
         cls._mme_control = self
+        self._drop_stale_lock(cls)
         return True
+
+    def _stage_lock(self) -> asyncio.Lock | None:
+        """每 stage 一把锁；无事件循环时返回 None（由调用方退化为无锁路径）。"""
+        cls = self._stage_cls()
+        if cls is None:
+            return None
+        loop = getattr(cls, "_mme_stt_lock_loop", None)
+        lock = getattr(cls, "_mme_stt_lock", None)
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        if lock is None or loop is None or loop is not current:
+            lock = asyncio.Lock()
+            cls._mme_stt_lock = lock
+            cls._mme_stt_lock_loop = current
+        return lock
+
+    @staticmethod
+    def _drop_stale_lock(cls) -> None:
+        """插件重载后事件循环可能更换，旧锁作废重建。"""
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if getattr(cls, "_mme_stt_lock_loop", None) is not current:
+            cls._mme_stt_lock = None
+            cls._mme_stt_lock_loop = None
 
     def uninstall(self) -> None:
         cls = self._stage_cls()
