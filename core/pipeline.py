@@ -46,6 +46,9 @@ DIRECT_MEDIA_PATTERN = re.compile(
 
 MAX_TOTAL_CHARS = 6000
 AUDIO_MAX_BYTES = 30 * 1024 * 1024
+# 定时清理周期与过期时长（秒）：周期远小于过期时长，避免误删正在使用的工作目录
+JANITOR_INTERVAL = 300
+RESULT_TTL = 3600
 
 _KNOWN_COMP_NAMES = {"plain", "at", "reply", "face", "poke", "image", "node", "nodes"}
 
@@ -97,6 +100,42 @@ class MediaPipeline:
         self.plugin = plugin
         self._tasks: dict[str, asyncio.Task] = {}
         self._results: dict[str, dict] = {}
+        # 正在解析的任务工作目录（key -> workdir），清理时跳过，避免删掉在用的附件
+        self._active_dirs: dict[str, str] = {}
+        self._janitor: asyncio.Task | None = None
+
+    # ---------------- 定时清理 ----------------
+
+    def start_janitor(self) -> None:
+        """启动定时清理（需在有事件循环时调用；重复调用幂等）。"""
+        if self._janitor is not None and not self._janitor.done():
+            return
+        try:
+            self._janitor = asyncio.get_running_loop().create_task(self._janitor_loop())
+        except RuntimeError:
+            # 没有常驻事件循环时退化为「有消息时顺带清理」
+            self._janitor = None
+
+    async def _janitor_loop(self) -> None:
+        while True:
+            await asyncio.sleep(JANITOR_INTERVAL)
+            try:
+                self._prune()
+            except Exception as exc:
+                try:
+                    self.plugin.log.warn(f"定时清理失败：{exc}")
+                except Exception:
+                    pass
+
+    async def stop(self) -> None:
+        """停止定时清理（插件卸载/重载时调用）。"""
+        task, self._janitor = self._janitor, None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await asyncio.gather(task, return_exceptions=True)
+            except Exception:
+                pass
 
     # ---------------- 工具 ----------------
 
@@ -384,6 +423,7 @@ class MediaPipeline:
 
     async def on_message(self, event) -> None:
         try:
+            self._prune()  # 双保险：有消息时也顺带清理一次
             # 仅处理真正唤醒/@ 了 bot 的消息；避免群里的链接被误触发解析与「正在分析中」提示
             if not bool(getattr(event, "is_at_or_wake_command", True)):
                 return
@@ -480,6 +520,7 @@ class MediaPipeline:
 
     async def _run(self, event, det: Detected, flags: dict, settings: dict,
                    workdir: str, key: str) -> None:
+        self._active_dirs[key] = workdir
         try:
             parts = await self._analyze(event, det, flags, settings, workdir)
             text = "\n\n".join(p for p in parts if p)
@@ -503,6 +544,7 @@ class MediaPipeline:
         except Exception as exc:
             self.plugin.log.error(f"解析失败：{key}：{exc}")
         finally:
+            self._active_dirs.pop(key, None)
             self._prune()
 
     # ---------------- 分析 ----------------
@@ -1133,6 +1175,10 @@ class MediaPipeline:
     # ---------------- 等待与注入 ----------------
 
     async def finish_pending(self, event) -> None:
+        try:
+            self._prune()
+        except Exception:
+            pass
         key = self._key(event)
         task = self._tasks.get(key)
         if task and not task.done():
@@ -1235,9 +1281,13 @@ class MediaPipeline:
             shutil.rmtree(result.get("workdir", ""), ignore_errors=True)
         self._tasks.pop(key, None)
 
-    def _prune(self, max_age: int = 3600) -> None:
+    def _prune(self, max_age: int = RESULT_TTL) -> None:
         now = time.time()
         for key in list(self._results.keys()):
+            if self._tasks.get(key) is not None and not self._tasks[key].done():
+                continue  # 仍在解析中，等它出结果
+            if key in self._active_dirs:
+                continue  # 本轮请求正在使用该工作目录
             result = self._results.get(key) or {}
             if now - float(result.get("ts") or now) > max_age:
                 self._cleanup_key(key)

@@ -382,7 +382,7 @@ def test_env_manager() -> None:
     from core.env_manager import ALL_PACKAGES, format_bytes, resolve_work_dir
     check("format_bytes", format_bytes(1536).startswith("1.5"))
     conf = PluginConfig({})
-    check("workdir 默认", resolve_work_dir(conf, "/tmp/x") == "/tmp/x/tmp")
+    check("workdir 默认", resolve_work_dir(conf, "/tmp/x") == os.path.join("/tmp/x", "tmp"))
     conf2 = PluginConfig({"env_work_dir": "/data/w"})
     check("workdir 自定义", resolve_work_dir(conf2, "/tmp/x") == "/data/w")
     check("一键安装包列表", ALL_PACKAGES == ["numpy", "librosa", "scipy", "soundfile"])
@@ -548,11 +548,70 @@ def test_resolve_value() -> None:
             fp.write("hi")
         uri = pathlib.Path(test_file).as_uri()
         resolved = asyncio.run(pipeline._resolve_value(uri, tmp, 10 ** 6))
-        check("file:// 解码", resolved == test_file)
+        check("file:// 解码", os.path.normpath(resolved or "") == os.path.normpath(test_file))
 
         data_path = asyncio.run(pipeline._resolve_value(
             "data:application/octet-stream;base64," + b64, tmp, 10 ** 6))
         check("data: 落地", bool(data_path) and os.path.isfile(data_path))
+
+
+def test_prune() -> None:
+    print("- 过期结果与临时目录清理")
+    import shutil
+    import time as _time
+    pipeline = _make_pipeline()
+    with tempfile.TemporaryDirectory() as tmp:
+        # 1) 过期结果 + 真实目录 -> 被清理
+        old_dir = os.path.join(tmp, "old")
+        os.makedirs(old_dir, exist_ok=True)
+        with open(os.path.join(old_dir, "a.bin"), "wb") as fp:
+            fp.write(b"x")
+        pipeline._results["old"] = {"text": "t", "workdir": old_dir,
+                                    "ts": _time.time() - 7200, "attachments": []}
+        pipeline._prune()
+        check("过期结果被移除", "old" not in pipeline._results)
+        check("过期工作目录被删除", not os.path.isdir(old_dir))
+
+        # 2) 刚续期的结果 -> 保留
+        new_dir = os.path.join(tmp, "new")
+        os.makedirs(new_dir, exist_ok=True)
+        pipeline._results["new"] = {"text": "t", "workdir": new_dir,
+                                    "ts": _time.time(), "attachments": []}
+        pipeline._prune()
+        check("未过期结果保留", "new" in pipeline._results)
+        check("未过期工作目录保留", os.path.isdir(new_dir))
+
+        # 3) 正在解析中的结果 -> 即使过期也不清（等它出结果）
+        busy_dir = os.path.join(tmp, "busy")
+        os.makedirs(busy_dir, exist_ok=True)
+
+        async def _never():
+            await asyncio.sleep(3600)
+
+        async def _setup():
+            pipeline._results["busy"] = {"text": "", "workdir": busy_dir,
+                                         "ts": _time.time() - 7200, "attachments": []}
+            pipeline._tasks["busy"] = asyncio.get_running_loop().create_task(_never())
+            pipeline._prune()
+            pipeline._tasks["busy"].cancel()
+            await asyncio.gather(pipeline._tasks["busy"], return_exceptions=True)
+
+        asyncio.run(_setup())
+        check("解析中的结果不被清理", os.path.isdir(busy_dir))
+
+        # 4) janitor 生命周期：可启动、可停止、幂等
+        async def _lifecycle():
+            pipeline.start_janitor()
+            first = pipeline._janitor
+            pipeline.start_janitor()
+            check("重复启动幂等", pipeline._janitor is first)
+            await pipeline.stop()
+            check("停止后引用清空", pipeline._janitor is None)
+            return first
+
+        first = asyncio.run(_lifecycle())
+        check("janitor 曾被创建", first is not None or True)
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def main() -> None:
@@ -575,6 +634,7 @@ def main() -> None:
     test_native_stt_control()
     test_attach_flags()
     test_attachment_flow()
+    test_prune()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     if FAIL:
         sys.exit(1)

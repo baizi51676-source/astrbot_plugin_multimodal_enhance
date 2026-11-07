@@ -215,6 +215,10 @@ class Main(Star):
     @filter.on_astrbot_loaded()
     async def on_astrbot_loaded(self):
         try:
+            self.pipeline.start_janitor()
+        except Exception as exc:
+            self.log.warn(f"定时清理启动失败：{exc}")
+        try:
             caption_patch.install(self)
         except Exception as exc:
             self.log.warn(f"图片增强补丁安装失败：{exc}")
@@ -242,6 +246,10 @@ class Main(Star):
             self.log.warn(f"注入异常：{exc}")
 
     async def terminate(self):
+        try:
+            await self.pipeline.stop()
+        except Exception:
+            pass
         try:
             caption_patch.uninstall(self)
         except Exception:
