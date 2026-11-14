@@ -1,0 +1,19 @@
+node_modules/
+dist/
+tsc-report.txt
+
+# editors / OS
+.DS_Store
+*.log
+*.log.err
+.serve.log*
+
+# local backups created by patch scripts
+*.bak-*
+*.bak
+*.p*bak-*
+*.mentionbak-*
+
+# scratch output from local visual checks (browser profiles, screenshots)
+.shots/
+.shot-*/

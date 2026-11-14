@@ -1,0 +1,16 @@
+@import 'tailwindcss';
+@import './styles/tokens.css';
+@import './styles/base.css';
+@import './styles/effects.css';
+
+/**
+ * Content sources.
+ *
+ * Tailwind v4 auto-detects sources from the project root, which means scratch
+ * output (browser profiles, screenshots) gets walked too. Pinning the scan to
+ * `./src` keeps builds fast and deterministic.
+ */
+@source './src';
+
+/* Dark mode is class driven (html.dark), set by our own theme provider. */
+@custom-variant dark (&:where(.dark, .dark *));

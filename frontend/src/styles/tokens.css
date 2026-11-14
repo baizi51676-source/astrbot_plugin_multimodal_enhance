@@ -1,0 +1,143 @@
+/**
+ * Design tokens.
+ *
+ * Naming follows the shadcn/ui convention (`--background`, `--primary`, ...) so
+ * the whole component layer can be themed by overriding a handful of variables,
+ * while the values are ours. `@theme inline` below exposes every token as a
+ * Tailwind colour utility (`bg-card`, `text-muted-foreground`, ...).
+ */
+
+:root {
+  --radius: 0.75rem;
+  --font-ui: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+
+  --background: oklch(99% 0.004 240);
+  --foreground: oklch(21% 0.03 250);
+  --card: oklch(100% 0 0);
+  --card-foreground: oklch(21% 0.03 250);
+  --popover: oklch(100% 0 0);
+  --popover-foreground: oklch(21% 0.03 250);
+
+  --primary: oklch(68.5% 0.155 230);
+  --primary-foreground: oklch(99% 0.005 240);
+  /** Second stop of the accent gradient; overridden when the accent changes. */
+  --primary-2: oklch(62% 0.17 262);
+  --secondary: oklch(96% 0.012 240);
+  --secondary-foreground: oklch(26% 0.03 250);
+  --muted: oklch(96% 0.012 240);
+  --muted-foreground: oklch(50% 0.02 250);
+  --accent: oklch(95% 0.026 235);
+  --accent-foreground: oklch(34% 0.07 235);
+
+  --destructive: oklch(60% 0.22 27);
+  --destructive-foreground: oklch(99% 0.005 240);
+  --success: oklch(63% 0.16 155);
+  --success-foreground: oklch(99% 0.005 155);
+  --warning: oklch(75% 0.15 75);
+  --warning-foreground: oklch(24% 0.04 75);
+
+  --border: oklch(91% 0.012 245);
+  --input: oklch(89% 0.014 245);
+  --ring: var(--primary);
+
+  --sidebar: oklch(98% 0.008 240);
+  --sidebar-border: oklch(91% 0.012 245);
+
+  /**
+   * Translucent accent derivatives are published as plain rgba() rather than
+   * derived with color-mix(): several embedded WebViews used for desktop-mode
+   * inspection still lack color-mix(), and chips/rings/charts all need them.
+   * The theme provider rewrites these three when the user picks an accent.
+   */
+  --accent-soft: rgba(14, 165, 233, 0.12);
+  --accent-faint: rgba(14, 165, 233, 0.07);
+  --accent-line: rgba(14, 165, 233, 0.34);
+
+  /** Elevation, kept in one place so shadows move with the theme. */
+  --shadow-sm: 0 1px 2px rgb(15 23 42 / 0.06);
+  --shadow-md: 0 4px 12px -2px rgb(15 23 42 / 0.1), 0 2px 6px -2px rgb(15 23 42 / 0.06);
+  --shadow-lg: 0 12px 32px -8px rgb(15 23 42 / 0.18), 0 4px 12px -4px rgb(15 23 42 / 0.1);
+}
+
+html.dark {
+  --background: oklch(20% 0.022 250);
+  --foreground: oklch(96% 0.005 250);
+  --card: oklch(24% 0.022 250);
+  --card-foreground: var(--foreground);
+  --popover: oklch(24% 0.022 250);
+  --popover-foreground: var(--foreground);
+
+  --primary: oklch(72% 0.15 230);
+  --primary-foreground: oklch(18% 0.022 250);
+  --primary-2: oklch(66% 0.17 275);
+  --secondary: oklch(28% 0.022 250);
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(28% 0.022 250);
+  --muted-foreground: oklch(71% 0.02 250);
+  --accent: oklch(31% 0.04 235);
+  --accent-foreground: oklch(93% 0.02 235);
+
+  --destructive: oklch(62% 0.21 27);
+  --destructive-foreground: oklch(98% 0.005 240);
+  --success: oklch(70% 0.15 155);
+  --success-foreground: oklch(18% 0.03 155);
+  --warning: oklch(78% 0.14 75);
+  --warning-foreground: oklch(22% 0.04 75);
+
+  --border: oklch(32% 0.022 250);
+  --input: oklch(34% 0.022 250);
+  --ring: var(--primary);
+
+  --sidebar: oklch(22% 0.022 250);
+  --sidebar-border: oklch(30% 0.022 250);
+
+  --accent-soft: rgba(56, 189, 248, 0.16);
+  --accent-faint: rgba(56, 189, 248, 0.09);
+  --accent-line: rgba(56, 189, 248, 0.38);
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-md: 0 4px 12px -2px rgb(0 0 0 / 0.4), 0 2px 6px -2px rgb(0 0 0 / 0.3);
+  --shadow-lg: 0 12px 32px -8px rgb(0 0 0 / 0.55), 0 4px 12px -4px rgb(0 0 0 / 0.35);
+}
+
+/* Tokens become Tailwind utilities. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-2: var(--primary-2);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-border: var(--sidebar-border);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --shadow-xs: var(--shadow-sm);
+  --shadow-card: var(--shadow-md);
+  --shadow-float: var(--shadow-lg);
+
+  --font-sans: var(--font-ui);
+}

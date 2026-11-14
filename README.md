@@ -114,4 +114,6 @@ https://github.com/baizi51676-source/astrbot_plugin_multimodal_enhance
 
 ## 许可证
 
-MIT License。详见 [LICENSE](./LICENSE)。
+MIT License，版权人 `baizi51676-source`。详见 [LICENSE](./LICENSE)。
+
+控制台前端源码位于 `frontend/`，其中部分界面代码源自 Aneko 界面模板；该模板原始版本以 AGPL-3.0-or-later 发布，版权人已对本目录代码额外授予 MIT 许可，因此整个插件统一按 MIT 分发。说明见 [frontend/LICENSE](./frontend/LICENSE)。

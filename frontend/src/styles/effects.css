@@ -1,0 +1,621 @@
+/**
+ * Visual layer: shared keyframes, accent-gradient surfaces and the wallpaper /
+ * glass rules.
+ *
+ * Every translucent surface is expressed with rgba() instead of color-mix() so
+ * it degrades gracefully on older WebViews, and light / dark rules are written
+ * as an explicit pair — a light rule without its dark counterpart is the usual
+ * cause of "dark theme but the sidebar stayed white".
+ */
+
+@keyframes ping-soft {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.45;
+  }
+  70%,
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+@keyframes progress-marquee {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+@keyframes reveal-in {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes theme-reveal {
+  from {
+    clip-path: circle(0px at var(--vt-x, 50%) var(--vt-y, 50%));
+  }
+  to {
+    clip-path: circle(150% at var(--vt-x, 50%) var(--vt-y, 50%));
+  }
+}
+
+/* Theme switch: circular reveal from the click point. */
+::view-transition-old(root) {
+  animation: none;
+}
+
+::view-transition-new(root) {
+  animation: theme-reveal 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ------------------------------------------------------------------ */
+/* motion budget                                                       */
+/* `data-motion` is set by the theme provider; "off" also disables the  */
+/* View Transition above, which CSS-only reduced-motion cannot reach.  */
+/* ------------------------------------------------------------------ */
+html[data-motion='subtle'] {
+  --motion-scale: 0.5;
+}
+
+html[data-motion='off'] {
+  --motion-scale: 0;
+}
+
+html[data-motion='off'] ::view-transition-new(root),
+html[data-motion='off'] ::view-transition-old(root) {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  ::view-transition-new(root) {
+    animation: none !important;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* accent gradient                                                     */
+/* `data-gradient="on"` turns the accent into a two-stop surface.       */
+/* Applied as a background-image so the plain background-color stays    */
+/* as a fallback for engines without gradients (none, practically).     */
+/* ------------------------------------------------------------------ */
+[data-gradient='on'] [data-accent-surface] {
+  background-image: linear-gradient(135deg, var(--primary) 0%, var(--primary-2) 100%);
+}
+
+/* Soft variant for large or repeated surfaces (active nav pill, chips): a
+   full-strength gradient behind body text is unreadable, so this keeps the
+   accent as a tint and lets the foreground keep contrast. */
+[data-gradient='on'] [data-accent-tint] {
+  background-image: linear-gradient(
+    135deg,
+    var(--accent-soft) 0%,
+    var(--accent-faint) 60%,
+    transparent 100%
+  );
+}
+
+[data-gradient='on'] [data-accent-text] {
+  background-image: linear-gradient(120deg, var(--primary) 10%, var(--primary-2) 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ------------------------------------------------------------------ */
+/* sidebar collapse (desktop)                                          */
+/* The nav is icon-only; labels fade out rather than reflow, so the     */
+/* width transition does not make text jump.                           */
+/* ------------------------------------------------------------------ */
+[data-sidebar='collapsed'] aside[data-slot='sidebar'] {
+  width: 64px;
+}
+
+/* Labels fade out slightly faster than the sidebar narrows, and fade back in a
+   touch later. Without the stagger the text is squeezed by the width transition
+   for a few frames, which reads as a wobble rather than a slide.
+
+   Timing is intentionally the same easing the rest of the shell uses
+   (cubic-bezier(0.16, 1, 0.3, 1)); the delay is what differs. */
+aside[data-slot='sidebar'] .nav-label,
+aside[data-slot='sidebar'] .nav-group-label,
+aside[data-slot='sidebar'] .brand-text {
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 1;
+  transition:
+    opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1) 0.1s,
+    width 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 折叠按钮的标签（“收起”）与导航项同属侧边栏，但它在 p-2 容器里，
+   默认 flex 收缩会把它挤成“收”。这里显式给出不收缩的最小宽度。 */
+aside[data-slot='sidebar'] button > .nav-label.truncate {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: none;
+}
+
+[data-sidebar='collapsed'] aside[data-slot='sidebar'] .nav-label,
+[data-sidebar='collapsed'] aside[data-slot='sidebar'] .nav-group-label,
+[data-sidebar='collapsed'] aside[data-slot='sidebar'] .brand-text {
+  opacity: 0;
+  width: 0;
+  pointer-events: none;
+  /* No delay on the way out: the label should be gone before the panel closes. */
+  transition:
+    opacity 0.12s cubic-bezier(0.16, 1, 0.3, 1),
+    width 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Respect the motion budget: the sidebar still resizes, it just does not ease. */
+html[data-motion='off'] aside[data-slot='sidebar'],
+html[data-motion='off'] aside[data-slot='sidebar'] .nav-label,
+html[data-motion='off'] aside[data-slot='sidebar'] .nav-group-label,
+html[data-motion='off'] aside[data-slot='sidebar'] .brand-text {
+  transition: none;
+}
+
+[data-sidebar='collapsed'] aside[data-slot='sidebar'] .nav-item {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+@media (max-width: 767px) {
+  [data-sidebar='collapsed'] aside[data-slot='sidebar'] {
+    width: 232px;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* skeleton shimmer                                                    */
+/* ------------------------------------------------------------------ */
+.sk-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--muted) 25%,
+    var(--border) 37%,
+    var(--muted) 63%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+html[data-motion='off'] .sk-shimmer {
+  animation: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* wallpaper mode: let the background image show through the chrome    */
+/* ------------------------------------------------------------------ */
+html[data-wallpaper='on'] body {
+  background: transparent;
+}
+
+html[data-wallpaper='on'] aside[data-slot='sidebar'] {
+  background-color: rgba(255, 255, 255, 0.82);
+}
+
+html.dark[data-wallpaper='on'] aside[data-slot='sidebar'] {
+  background-color: rgba(16, 21, 28, 0.82);
+}
+
+html[data-wallpaper='on'] [data-slot='card'] {
+  backdrop-filter: blur(2px);
+}
+
+/* ------------------------------------------------------------------ */
+/* range slider                                                        */
+/*                                                                     */
+/* The filled track is painted on the INPUT itself, not on the         */
+/* ::-webkit-slider-runnable-track pseudo-element. Custom properties   */
+/* are not reliably inherited into those pseudo-elements across        */
+/* engines, which left the track flat grey. Painting the input's own   */
+/* background keeps the gradient (and therefore the theme colour)      */
+/* working everywhere, with a transparent pseudo-track on top.         */
+/*                                                                     */
+/* Colours are --primary (theme accent) for the filled part and        */
+/* --secondary for the remainder, so the slider always matches the     */
+/* current accent — including a custom accent or a preset skin.        */
+/* ------------------------------------------------------------------ */
+.ui-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 24px;
+  border-radius: 999px;
+  cursor: pointer;
+  outline: none;
+  background: transparent;
+  transition: box-shadow 0.15s ease;
+}
+
+/*
+ * The track is drawn as a background on the PSEUDO-ELEMENT, not on the input.
+ *
+ * Why: the thumb at 0% / 100% overhangs the track by its radius. Painting the
+ * track on the input itself means the overhang is clipped by the input's own
+ * border-box, which visibly cuts the knob in half at both extremes. Giving the
+ * pseudo-track horizontal margins equal to that overhang keeps the knob fully
+ * inside the track's own geometry.
+ *
+ * The custom property is re-declared on the pseudo-element because custom
+ * properties are not reliably inherited into ::-webkit-slider-* across engines
+ * (that is also why the earlier attempt rendered a flat grey track).
+ */
+.ui-slider::-webkit-slider-runnable-track {
+  height: 24px;
+  border-radius: 999px;
+  /* Theme accent fills up to --slider-percent; the rest is the quiet track. */
+  background-image: linear-gradient(
+    to right,
+    var(--primary) 0%,
+    var(--primary) var(--slider-percent, 0%),
+    var(--secondary) var(--slider-percent, 0%),
+    var(--secondary) 100%
+  );
+  transition: background-image 0.12s linear;
+}
+
+.ui-slider::-moz-range-track {
+  height: 24px;
+  border-radius: 999px;
+  background-color: var(--secondary);
+}
+
+.ui-slider::-moz-range-progress {
+  height: 24px;
+  border-radius: 999px;
+  background-color: var(--primary);
+}
+
+.ui-slider:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.ui-slider:focus-visible {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-radius: 999px;
+}
+
+/* --- thumb: white knob with an accent ring --- */
+/*
+ * Ring = inset box-shadow with var(--primary).
+ *
+ * Two findings from pixel-sampling the rendered result shaped this:
+ *
+ *  1. `border` on ::-webkit-slider-thumb is dropped by the compositor (the
+ *     knob painted pure white with no ring). An inset shadow paints inside the
+ *     element's own box and survives.
+ *  2. `currentColor` resolved to a *lightened* accent (145,214,245 instead of
+ *     14,165,233) because the input inherits a lightened `color` in some
+ *     contexts. Referring to the token directly is exact — the track gradient
+ *     in the same pseudo-element already proves var(--primary) resolves here.
+ */
+.ui-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px; /* centres the knob in the 24px track */
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow:
+    inset 0 0 0 4px var(--primary),
+    0 1px 3px rgb(15 23 42 / 0.18);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ui-slider::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow:
+    inset 0 0 0 4px var(--primary),
+    0 1px 3px rgb(15 23 42 / 0.18);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Grow slightly on interaction — a cheap affordance that also helps touch. */
+.ui-slider:hover::-webkit-slider-thumb {
+  transform: scale(1.08);
+}
+
+.ui-slider:hover::-moz-range-thumb {
+  transform: scale(1.08);
+}
+
+.ui-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow:
+    0 0 0 4px var(--accent-soft),
+    0 1px 3px rgb(15 23 42 / 0.18);
+}
+
+.ui-slider:focus-visible::-moz-range-thumb {
+  box-shadow:
+    0 0 0 4px var(--accent-soft),
+    0 1px 3px rgb(15 23 42 / 0.18);
+}
+
+/* Motion budget: none of the above should animate when motion is off. */
+html[data-motion='off'] .ui-slider::-webkit-slider-thumb,
+html[data-motion='off'] .ui-slider::-moz-range-thumb,
+html[data-motion='off'] .ui-slider::-webkit-slider-runnable-track {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-slider::-webkit-slider-thumb,
+  .ui-slider::-moz-range-thumb,
+  .ui-slider::-webkit-slider-runnable-track {
+    transition: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* glass mode (opt-in): translucent panels over the wallpaper          */
+/* Only applies together with a wallpaper so plain themes stay solid.  */
+/*                                                                     */
+/* Blur radius and panel opacity are both driven by custom properties  */
+/* that the theme provider publishes from `ui.glassBlur`. They are not */
+/* hard-coded here because the appearance page exposes a live slider — */
+/* baking a value into the stylesheet would mean shipping one class    */
+/* per possible radius.                                                */
+/*                                                                     */
+/* The two are coupled on purpose: `glassOpacityFor()` raises opacity  */
+/* as blur increases, because a heavy frost without enough body behind */
+/* it dissolves body text into the image.                              */
+/* ------------------------------------------------------------------ */
+html[data-wallpaper='on'][data-glass='on'] [data-slot='card'] {
+  background-color: rgb(255 255 255 / var(--glass-opacity, 0.86));
+  backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
+  /* Text follows the theme's foreground, not the image underneath. */
+  color: var(--foreground);
+}
+
+html.dark[data-wallpaper='on'][data-glass='on'] [data-slot='card'] {
+  background-color: rgb(24 30 38 / var(--glass-opacity-dark, 0.84));
+}
+
+html[data-wallpaper='on'][data-glass='on'] [data-slot='topbar'] {
+  background-color: rgb(255 255 255 / var(--glass-opacity, 0.86));
+  backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
+}
+
+html.dark[data-wallpaper='on'][data-glass='on'] [data-slot='topbar'] {
+  background-color: rgb(20 26 33 / var(--glass-opacity-dark, 0.84));
+}
+
+/* The sidebar sits on the wallpaper edge and needs the same treatment. */
+html[data-wallpaper='on'][data-glass='on'] aside[data-slot='sidebar'] {
+  background-color: rgb(255 255 255 / var(--glass-opacity, 0.86));
+  backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
+}
+
+html.dark[data-wallpaper='on'][data-glass='on'] aside[data-slot='sidebar'] {
+  background-color: rgb(16 21 28 / var(--glass-opacity-dark, 0.84));
+}
+
+/* When blur is dialled to zero the panel must still read as a panel, so fall
+   back to a near-opaque surface instead of an invisible one. */
+html[data-glass='on'] [data-slot='card'],
+html[data-glass='on'] [data-slot='topbar'],
+html[data-glass='on'] aside[data-slot='sidebar'] {
+  transition: background-color 0.25s ease, backdrop-filter 0.25s ease;
+}
+
+/* ------------------------------------------------------------------ */
+/* page headings over a wallpaper                                      */
+/* The h1 and its description sit directly on the image — unlike cards, */
+/* there is no panel behind them, so on a saturated photo the muted     */
+/* description drops to unreadable contrast. A soft blurred backdrop   */
+/* only in wallpaper mode fixes that without changing the plain look.  */
+/* ------------------------------------------------------------------ */
+/* Plain mode: no panel — just a small optical indent so the heading lines up
+   with card *text* rather than card edges. A transparent border keeps the text
+   from shifting a pixel when the panel turns on in wallpaper mode. */
+[data-slot='page-header'] {
+  padding-inline: 0.25rem;
+}
+
+/* Only when there is NO wallpaper does the border vanish; otherwise the
+   component's border-border/70 utility must stay in effect so the panel matches
+   the cards pixel for pixel. */
+html:not([data-wallpaper='on']) [data-slot='page-header'] {
+  border-color: transparent;
+}
+
+/* ------------------------------------------------------------------ */
+/* page headings over a wallpaper                                      */
+/*                                                                     */
+/* The h1 sits directly on the image — unlike cards there is no panel  */
+/* behind it, so on a saturated photo the muted description drops to   */
+/* unreadable contrast.                                                */
+/*                                                                     */
+/* Radius and border come from the component's own Tailwind classes    */
+/* (`rounded-xl border-border/70`, identical to Card); this rule only  */
+/* adds the glass surface and the padding the panel needs. Duplicating */
+/* the chrome here is exactly what let the two drift apart before:     */
+/* the radius was one step smaller and the border used the solid       */
+/* token instead of the 70% one.                                       */
+/*                                                                     */
+/* No negative margins — the header spans the content column, so its   */
+/* left/right edges line up with the card grid.                        */
+/* ------------------------------------------------------------------ */
+html[data-wallpaper='on'] [data-slot='page-header'] {
+  padding: 0.875rem 1rem;
+  /* Border geometry AND colour come from the component's `border-border/70`
+     utility (the exact class Card uses), so nothing is overridden here. */
+  background-color: rgb(255 255 255 / var(--glass-opacity, 0.86));
+  backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
+}
+
+html.dark[data-wallpaper='on'] [data-slot='page-header'] {
+  background-color: rgb(20 26 33 / var(--glass-opacity-dark, 0.84));
+}
+
+/* Glass off (or blur at zero) still needs a legible panel: fall back to the
+   plain card surface, matching what the cards themselves do. */
+html[data-wallpaper='on'][data-glass='off'] [data-slot='page-header'] {
+  background-color: var(--card);
+  backdrop-filter: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* forced-desktop-viewport correction (see useViewportScale)           */
+/* ------------------------------------------------------------------ */
+html[data-viewscale='on'] body {
+  zoom: 0.72;
+}
+
+/* ------------------------------------------------------------------ */
+/* markdown / rich text panes                                          */
+/* ------------------------------------------------------------------ */
+.prose-neko {
+  font-size: 13.5px;
+  line-height: 1.72;
+  word-break: break-word;
+}
+
+.prose-neko h1,
+.prose-neko h2,
+.prose-neko h3,
+.prose-neko h4 {
+  margin: 18px 0 8px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+.prose-neko h1 {
+  font-size: 19px;
+}
+
+.prose-neko h2 {
+  font-size: 16px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.prose-neko h3 {
+  font-size: 14.5px;
+}
+
+.prose-neko h4 {
+  font-size: 13.5px;
+}
+
+.prose-neko p {
+  margin: 9px 0;
+}
+
+.prose-neko ul,
+.prose-neko ol {
+  margin: 9px 0;
+  padding-left: 22px;
+  list-style: revert;
+}
+
+.prose-neko li {
+  margin: 4px 0;
+}
+
+.prose-neko code {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  font-size: 12px;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+
+.prose-neko pre {
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  overflow: auto;
+  margin: 10px 0;
+}
+
+.prose-neko pre code {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.prose-neko blockquote {
+  margin: 10px 0;
+  padding: 6px 14px;
+  border-left: 3px solid var(--primary);
+  background: rgba(127, 127, 127, 0.09);
+  color: var(--muted-foreground);
+}
+
+.prose-neko a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.prose-neko hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 16px 0;
+}
+
+.prose-neko table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  margin: 10px 0;
+}
+
+.prose-neko th,
+.prose-neko td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.prose-neko th {
+  background: var(--muted);
+  font-weight: 600;
+}
+
+.prose-neko img {
+  max-width: 100%;
+  border-radius: 10px;
+}
