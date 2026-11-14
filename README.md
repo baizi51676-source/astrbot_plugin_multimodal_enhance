@@ -25,7 +25,7 @@
   - 支持直接发送的视频，以及回复/引用某条视频（@Bot 问「这是什么」也能解析）；
   - B站链接：自动获取标题 / 简介 / 发布时间，并按上限下载解析（默认 ≤10 分钟、≤100MB）；
   - 聊天主模型本身支持视频输入时，建议保持关闭。
-- **插件页面**：总览（按 bot 分页）、配置（默认 + 每个 bot 分页的详细覆写，与 AstrBot 插件配置同一份文件）、插件日志（导出 + SSE 实时流，并同步转发到 AstrBot 官方 logger）、环境配置（一键安装全部依赖 / 清理临时文件）。
+- **插件页面**：总览（按 bot 分页）、配置（默认 + 每个 bot 分页的详细覆写，与 AstrBot 插件配置同一份文件）、插件日志（导出 + SSE 实时流，并同步转发到 AstrBot 官方 logger）、环境配置（一键安装全部依赖 / 清理临时文件）。页面支持浅色 / 深色 / 跟随系统三种外观，会自动跟随桌面端与手机端的屏幕宽度调整布局。
 - **多 bot 适配**：全局默认配置 + 按单个 bot 覆写开关。
 
 ## 安装
@@ -117,3 +117,17 @@ https://github.com/baizi51676-source/astrbot_plugin_multimodal_enhance
 MIT License，版权人 `baizi51676-source`。详见 [LICENSE](./LICENSE)。
 
 控制台前端源码位于 `frontend/`，其中部分界面代码源自 Aneko 界面模板；该模板原始版本以 AGPL-3.0-or-later 发布，版权人已对本目录代码额外授予 MIT 许可，因此整个插件统一按 MIT 分发。说明见 [frontend/LICENSE](./frontend/LICENSE)。
+
+## 二次开发（前端）
+
+插件页面的构建产物已随仓库提供（`pages/console/`），直接使用无需构建。若要修改界面：
+
+```sh
+cd frontend
+pnpm install
+pnpm dev        # 本地开发（需自行 mock window.AstrBotPluginPage）
+pnpm build      # 产物输出到 ../pages/console
+pnpm typecheck  # 类型检查
+```
+
+要求 Node 20+。`vite.config.ts` 里的 `base: './'` 是必需的：页面在 AstrBot 的 iframe 子路径下访问，绝对路径会导致资源 404。
