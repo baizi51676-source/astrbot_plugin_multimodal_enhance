@@ -688,7 +688,7 @@ class MediaPipeline:
             except Exception:
                 return None
         if value.startswith(("http://", "https://")):
-            allowed, reason = is_safe_url(value)
+            allowed, reason = await is_safe_url(value)
             if not allowed:
                 self.plugin.log.warn(
                     f"已拒绝不安全的媒体地址：{masked_host(value)}（{reason}）")

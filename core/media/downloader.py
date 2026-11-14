@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import glob
+import ipaddress
 import json
 import os
-from urllib.parse import urljoin
+import socket
+from urllib.parse import urljoin, urlparse
 
 try:
     import aiohttp
@@ -14,7 +16,7 @@ except Exception:  # pragma: no cover
     aiohttp = None  # type: ignore
 
 from .ffmpeg_tools import run_proc
-from .netguard import is_safe_url, masked_host
+from .netguard import is_safe_url, is_safe_url_async, masked_host
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
@@ -22,22 +24,70 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 MAX_REDIRECTS = 3
 
 
-def _url_ok(url: str) -> tuple[bool, str]:
-    return is_safe_url(url)
+async def _guard(url: str) -> tuple[bool, str]:
+    """下载前的异步边界校验（DNS 在线程池里解析，不阻塞事件循环）。"""
+    return await is_safe_url(url)
+
+
+async def _guard_pinned(url: str) -> tuple[bool, str, list[str]]:
+    """校验并返回解析到的安全地址，供连接阶段固定使用。"""
+    return await is_safe_url_async(url)
+
+
+class _PinnedResolver(aiohttp.abc.AbstractResolver if aiohttp else object):
+    """把主机名固定到已校验的 IP。
+
+    先校验再交给 aiohttp 自行连接存在 TOCTOU 窗口：DNS rebinding 可以在
+    校验通过后把同一域名重新解析到内网地址。这里把校验得到的 IP 直接用于
+    建连，连接阶段不再做第二次解析。
+    """
+
+    def __init__(self, host: str, addresses: list[str]) -> None:
+        self._host = (host or '').lower()
+        self._addresses = addresses
+
+    async def resolve(self, host, port=0, family=socket.AF_INET):
+        if (host or '').lower() != self._host or not self._addresses:
+            raise OSError(f'未固定的主机：{host}')
+        out = []
+        for addr in self._addresses:
+            try:
+                ip = ipaddress.ip_address(addr)
+            except ValueError:
+                continue
+            out.append({
+                'hostname': host,
+                'host': str(ip),
+                'port': port,
+                'family': socket.AF_INET6 if ip.version == 6 else socket.AF_INET,
+                'proto': 0,
+                'flags': socket.AI_NUMERICHOST,
+            })
+        if not out:
+            raise OSError(f'无可用地址：{host}')
+        return out
+
+    async def close(self) -> None:
+        return None
 
 
 async def http_get_json(url: str, headers: dict | None = None,
                         timeout: float = 20) -> dict | list | None:
     if aiohttp is None:
         return None
-    if not is_safe_url(url)[0]:
+    ok, _reason, addresses = await _guard_pinned(url)
+    if not ok:
         return None
     try:
-        async with aiohttp.ClientSession(headers={
-            "User-Agent": UA,
-            "Accept": "application/json, text/plain, */*",
-            **(headers or {}),
-        }) as session:
+        connector = aiohttp.TCPConnector(
+            resolver=_PinnedResolver(urlparse(url).hostname or '', addresses))
+        async with aiohttp.ClientSession(
+                headers={
+                    "User-Agent": UA,
+                    "Accept": "application/json, text/plain, */*",
+                    **(headers or {}),
+                },
+                connector=connector) as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
                 if resp.status >= 400:
                     return None
@@ -51,13 +101,17 @@ async def http_get_final_url(url: str, headers: dict | None = None,
     """跟随重定向，返回最终 URL（用于短链解析）。每一跳都做网络边界校验。"""
     if aiohttp is None:
         return None
-    ok, _ = _url_ok(url)
+    ok, _reason, addresses = await _guard_pinned(url)
     if not ok:
         return None
     current = url
     try:
-        async with aiohttp.ClientSession(headers={"User-Agent": UA, **(headers or {})}) as session:
-            for _hop in range(MAX_REDIRECTS + 1):
+        for _hop in range(MAX_REDIRECTS + 1):
+            connector = aiohttp.TCPConnector(
+                resolver=_PinnedResolver(urlparse(current).hostname or '', addresses))
+            async with aiohttp.ClientSession(
+                    headers={"User-Agent": UA, **(headers or {})},
+                    connector=connector) as session:
                 async with session.get(current, timeout=aiohttp.ClientTimeout(total=timeout),
                                        allow_redirects=False) as resp:
                     if resp.status in (301, 302, 303, 307, 308):
@@ -65,9 +119,10 @@ async def http_get_final_url(url: str, headers: dict | None = None,
                         if not location:
                             return str(resp.url)
                         current = urljoin(str(resp.url), location)
-                        ok, _ = _url_ok(current)
-                        if not ok:
+                        allowed, _why, next_addresses = await _guard_pinned(current)
+                        if not allowed:
                             return None
+                        addresses = next_addresses
                         continue
                     return str(resp.url)
         return None
@@ -77,17 +132,25 @@ async def http_get_final_url(url: str, headers: dict | None = None,
 
 async def download_url(url: str, dest: str, max_bytes: int,
                        headers: dict | None = None, timeout: float = 120) -> tuple[bool, str]:
-    """流式下载，执行大小上限；重定向逐跳校验。返回 (是否成功, 说明)。"""
+    """流式下载，执行大小上限；重定向逐跳校验。
+
+    每一跳都用「校验得到的 IP」建连（_PinnedResolver），避免校验与连接之间
+    被 DNS rebinding 换到内网地址。
+    """
     if aiohttp is None:
         return False, "aiohttp 不可用"
-    ok, reason = _url_ok(url)
+    ok, reason, addresses = await _guard_pinned(url)
     if not ok:
         return False, f"地址被拒绝（{reason}）"
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
     target = url
     try:
-        async with aiohttp.ClientSession(headers={"User-Agent": UA, **(headers or {})}) as session:
-            for _hop in range(MAX_REDIRECTS + 1):
+        for _hop in range(MAX_REDIRECTS + 1):
+            connector = aiohttp.TCPConnector(
+                resolver=_PinnedResolver(urlparse(target).hostname or '', addresses))
+            async with aiohttp.ClientSession(
+                    headers={"User-Agent": UA, **(headers or {})},
+                    connector=connector) as session:
                 async with session.get(target, timeout=aiohttp.ClientTimeout(total=timeout),
                                        allow_redirects=False) as resp:
                     if resp.status in (301, 302, 303, 307, 308):
@@ -95,10 +158,11 @@ async def download_url(url: str, dest: str, max_bytes: int,
                         if not location:
                             return False, "重定向缺少 Location"
                         next_url = urljoin(str(resp.url), location)
-                        allowed, why = _url_ok(next_url)
+                        allowed, why, next_addresses = await _guard_pinned(next_url)
                         if not allowed:
                             return False, f"重定向被拒绝（{masked_host(next_url)}：{why}）"
                         target = next_url
+                        addresses = next_addresses
                         continue
                     if resp.status >= 400:
                         return False, f"HTTP {resp.status}"
@@ -117,8 +181,8 @@ async def download_url(url: str, dest: str, max_bytes: int,
                                     pass
                                 return False, "超过大小上限，已中止"
                             fp.write(chunk)
-                return True, f"{written} bytes"
-            return False, "重定向次数过多"
+                    return True, f"{written} bytes"
+        return False, "重定向次数过多"
     except asyncio.CancelledError:
         try:
             if os.path.exists(dest):

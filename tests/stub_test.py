@@ -631,32 +631,71 @@ def test_netguard() -> None:
         ("", "空地址"),
     ]
     for url, label in blocked:
-        ok, _reason = is_safe_url(url)
+        ok, _reason = asyncio.run(is_safe_url(url))
         check(f"拒绝{label}", ok is False)
 
     # 域名解析结果注入：公网域名通过、解析到内网拒绝（不依赖真实 DNS）
     from core.media import netguard
 
-    def fake_public(host, *args, **kwargs):
-        return [(2, 1, 6, "", ("93.184.216.34", 0))]
+    async def fake_public(host):
+        return ["93.184.216.34"]
 
-    def fake_private(host, *args, **kwargs):
-        return [(2, 1, 6, "", ("192.168.0.10", 0))]
+    async def fake_private(host):
+        return ["192.168.0.10"]
 
-    orig = netguard.socket.getaddrinfo
+    orig = netguard._resolve_host
     try:
-        netguard.socket.getaddrinfo = fake_public
-        ok, _ = is_safe_url("https://music.163.com/song/media/outer/url?id=1.mp3")
+        netguard._resolve_host = fake_public
+        ok, _ = asyncio.run(
+            is_safe_url("https://music.163.com/song/media/outer/url?id=1.mp3"))
         check("公网域名放行", ok is True)
-        ok, _ = is_safe_url("https://api.bilibili.com/x/web-interface/view?bvid=BV1xx")
+        ok, _ = asyncio.run(
+            is_safe_url("https://api.bilibili.com/x/web-interface/view?bvid=BV1xx"))
         check("B 站 API 放行", ok is True)
 
-        netguard.socket.getaddrinfo = fake_private
-        ok, reason = is_safe_url("https://evil.test/a.mp3")
+        netguard._resolve_host = fake_private
+        ok, reason = asyncio.run(is_safe_url("https://evil.test/a.mp3"))
         check("解析到内网被拒", ok is False)
         check("拒绝原因可读", "内网" in reason)
     finally:
-        netguard.socket.getaddrinfo = orig
+        netguard._resolve_host = orig
+
+    # 关键回归：校验必须异步，不能在事件循环里同步调 socket.getaddrinfo
+    import inspect
+    check("is_safe_url 是协程函数", inspect.iscoroutinefunction(is_safe_url))
+    check("_resolve_host 是协程函数", inspect.iscoroutinefunction(netguard._resolve_host))
+
+    # 阻塞检测：DNS 缓慢时事件循环仍需能被其它任务推进
+    async def slow_resolve(_host):
+        await asyncio.sleep(0.15)
+        return ["93.184.216.34"]
+
+    async def probe_non_blocking():
+        netguard._resolve_host = slow_resolve
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        task = asyncio.create_task(ticker())
+        try:
+            await is_safe_url("https://slow.test/a.mp3")
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        return ticks
+
+    try:
+        ticks = asyncio.run(probe_non_blocking())
+    finally:
+        netguard._resolve_host = orig
+    check("DNS 解析期间事件循环未被阻塞", ticks >= 5)
 
     # 本地路径白名单：目录外拒绝、目录内放行
     pipeline = _make_pipeline()

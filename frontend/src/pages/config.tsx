@@ -17,6 +17,7 @@ import { Field, Input, Textarea } from '@/components/ui/field';
 import { Select } from '@/components/ui/select';
 import { ToggleSwitch } from '@/components/ui/toggle-switch';
 import { EmptyState } from '@/components/ui/empty-state';
+import { Dialog } from '@/components/ui/dialog';
 import { useToast } from '@/components/ui/toast';
 
 type Draft = {
@@ -132,6 +133,7 @@ export default function ConfigPage() {
   const [tab, setTab] = useState<string>('default');
   const [globalDraft, setGlobalDraft] = useState<Record<string, unknown>>({});
   const [botDraft, setBotDraft] = useState<Draft | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!hasBridge()) return;
@@ -237,7 +239,7 @@ export default function ConfigPage() {
 
   const deleteBot = async () => {
     if (!hasBridge() || !botDraft) return;
-    if (!window.confirm(`确认删除「${botDraft.name || '该 Bot'}」的覆写配置？`)) return;
+    setDeleteOpen(false);
     try {
       await bridge.apiPost('bots/delete', { index: botDraft.index });
       setTab('default');
@@ -344,7 +346,7 @@ export default function ConfigPage() {
               </Field>
             </div>
             <div className="mt-3">
-              <Button size="sm" variant="destructive" onClick={() => void deleteBot()}>
+              <Button size="sm" variant="destructive" onClick={() => setDeleteOpen(true)}>
                 <Trash2 className="size-3.5" />
                 删除此 Bot 配置
               </Button>
@@ -413,6 +415,23 @@ export default function ConfigPage() {
           </div>
         </div>
       ) : null}
+
+      <Dialog
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        title="删除 Bot 配置"
+        description={`确认删除「${botDraft?.name || '该 Bot'}」的覆写配置？该操作不可撤销，删除后该 Bot 将全部跟随默认配置。`}
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="ghost" onClick={() => setDeleteOpen(false)}>
+              取消
+            </Button>
+            <Button size="sm" variant="destructive" onClick={() => void deleteBot()}>
+              确认删除
+            </Button>
+          </div>
+        }
+      />
     </div>
   );
 }
